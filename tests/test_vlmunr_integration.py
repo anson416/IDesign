@@ -155,9 +155,12 @@ def test_generate_variants_writes_six_dirs(tmp_path):
         "variant_half",
         "variant_quarter",
         "variant_eighth",
+        "variant_scramble",
         "variant_alt_0",
         "variant_alt_2",
         "variant_alt_4",
+        "variant_subst_within",
+        "variant_subst_cross",
     }
     for path in created.values():
         assert os.path.exists(os.path.join(path, "scene_graph.json"))
@@ -167,6 +170,19 @@ def test_generate_variants_writes_six_dirs(tmp_path):
         alt = json.load(f)
     assert any("_vlmunr_alt_intent" in e for e in alt)
     assert len(list(render.iter_real_objects(alt))) == 16
+
+    # subst variant retains its own intent metadata; renderer ignores it.
+    with open(
+        os.path.join(created["variant_subst_within"], "scene_graph.json")
+    ) as f:
+        subst = json.load(f)
+    assert any("_vlmunr_subst_intent" in e for e in subst)
+    assert len(list(render.iter_real_objects(subst))) == 16
+
+    # scramble variant keeps the full object set, no metadata entry.
+    with open(os.path.join(created["variant_scramble"], "scene_graph.json")) as f:
+        scram = json.load(f)
+    assert len(scram) == 16
 
 
 # ---------------------------------------------------------------------------
@@ -200,12 +216,66 @@ def test_idesign_transform_rotation_offset():
 # ---------------------------------------------------------------------------
 
 
+def test_factor_level_counts_match_paper_table1():
+    assert len(cfg.RESOLUTIONS) == 9
+    assert len(cfg.FOCAL_LENGTHS) == 7
+    assert len(cfg.PITCHES) == 7
+    assert len(cfg.YAWS) == 8
+    assert len(cfg.BACKGROUND_GRAYS) == 6
+    assert len(cfg.BACKGROUND_CHROMATIC) == 3
+
+
+def test_factor_level_values_match_paper_table1():
+    assert cfg.RESOLUTIONS == [196, 224, 256, 336, 384, 448, 512, 768, 1024]
+    assert cfg.FOCAL_LENGTHS == [16, 24, 35, 50, 85, 100, 200]
+    assert cfg.BACKGROUND_GRAYS == [0, 65, 128, 186, 204, 255]
+    assert cfg.BACKGROUND_CHROMATIC == [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+    assert cfg.PITCHES == [0, 15, 30, 45, 60, 75, 90]
+    assert cfg.YAWS == [0, 45, 90, 135, 180, 225, 270, 315]
+    # Floor-texture background is a documented, NON-rendered sentinel.
+    assert cfg.FLOOR_TEXTURE_BACKGROUND == "floor_texture"
+    assert cfg.BASELINE_YAW_PITCH == 45
+
+
+def test_all_phases_contains_new_phases():
+    assert cfg.ALL_PHASES == [
+        "1a", "1b", "1b_chroma", "1c", "1d", "2", "2_pitch", "2_yaw"
+    ]
+
+
 def test_phase_levels_counts():
     assert len(cfg.phase_levels("1a")) == len(cfg.RESOLUTIONS)
     assert len(cfg.phase_levels("1b")) == len(cfg.BACKGROUND_GRAYS)
     assert len(cfg.phase_levels("1c")) == len(cfg.HDRIS)
     assert len(cfg.phase_levels("1d")) == len(cfg.FOCAL_LENGTHS)
     assert len(cfg.phase_levels("2")) == len(cfg.PITCHES) * len(cfg.YAWS)
+
+
+def test_phase_levels_chroma():
+    chroma = cfg.phase_levels("1b_chroma")
+    assert len(chroma) == 3
+    assert [c["bg"] for c in chroma] == cfg.BACKGROUND_CHROMATIC
+    # All other factors held at baseline.
+    for c in chroma:
+        assert c["res"] == cfg.BASELINE_RES
+        assert c["focal"] == cfg.BASELINE_FOCAL
+        assert c["hdri"] == cfg.BASELINE_HDRI
+        assert c["pitch"] == cfg.BASELINE_PITCH
+        assert c["yaw"] == cfg.BASELINE_YAW
+
+
+def test_phase_levels_pitch_sweep():
+    pitch = cfg.phase_levels("2_pitch")
+    assert len(pitch) == 7
+    assert [c["pitch"] for c in pitch] == cfg.PITCHES
+    assert all(c["yaw"] == 0 for c in pitch)
+
+
+def test_phase_levels_yaw_sweep_at_pitch_45():
+    yaw = cfg.phase_levels("2_yaw")
+    assert len(yaw) == 8
+    assert all(c["pitch"] == 45 for c in yaw)
+    assert [c["yaw"] for c in yaw] == cfg.YAWS
 
 
 def test_phase_levels_hold_baseline():
@@ -223,6 +293,121 @@ def test_phase_levels_hold_baseline():
 def test_phase_levels_unknown_raises():
     with pytest.raises(ValueError):
         cfg.phase_levels("9z")
+
+
+# ---------------------------------------------------------------------------
+# Layout scramble.
+# ---------------------------------------------------------------------------
+
+ROOM_DIMS = [4.0, 4.0, 2.5]
+
+
+def test_scramble_deterministic_with_seed():
+    real = variants.filter_real_objects(synthetic_scene(8))
+    a = variants.scramble_positions(real, ROOM_DIMS, seed=11)
+    b = variants.scramble_positions(real, ROOM_DIMS, seed=11)
+    c = variants.scramble_positions(real, ROOM_DIMS, seed=12)
+    a_pos = [(o["position"]["x"], o["position"]["y"]) for o in a]
+    b_pos = [(o["position"]["x"], o["position"]["y"]) for o in b]
+    c_pos = [(o["position"]["x"], o["position"]["y"]) for o in c]
+    assert a_pos == b_pos
+    assert a_pos != c_pos
+
+
+def test_scramble_positions_within_bounds():
+    real = variants.filter_real_objects(synthetic_scene(20))
+    out = variants.scramble_positions(real, ROOM_DIMS, seed=3)
+    for o in out:
+        assert 0.0 <= o["position"]["x"] <= ROOM_DIMS[0]
+        assert 0.0 <= o["position"]["y"] <= ROOM_DIMS[1]
+
+
+def test_scramble_preserves_ids_count_and_rotation():
+    real = variants.filter_real_objects(synthetic_scene(10))
+    # Give objects distinct rotations and base heights to assert preservation.
+    for i, o in enumerate(real):
+        o["rotation"]["z_angle"] = float(i * 9)
+        o["position"]["z"] = float(i) * 0.1
+    out = variants.scramble_positions(real, ROOM_DIMS, seed=5)
+    assert len(out) == len(real)
+    assert [o["new_object_id"] for o in out] == [o["new_object_id"] for o in real]
+    for orig, new in zip(real, out):
+        assert new["rotation"] == orig["rotation"]
+        assert new["position"]["z"] == orig["position"]["z"]
+
+
+def test_scramble_does_not_mutate_input():
+    real = variants.filter_real_objects(synthetic_scene(4))
+    before = [(o["position"]["x"], o["position"]["y"]) for o in real]
+    variants.scramble_positions(real, ROOM_DIMS, seed=1)
+    after = [(o["position"]["x"], o["position"]["y"]) for o in real]
+    assert before == after
+
+
+# ---------------------------------------------------------------------------
+# Within-/cross-category substitution.
+# ---------------------------------------------------------------------------
+
+
+def category_scene():
+    return [
+        make_object("chair_1"),
+        make_object("chair_2"),
+        make_object("table_1"),
+        make_object("floor_lamp_1"),
+    ]
+
+
+def test_object_category_strips_instance_suffix():
+    assert variants.object_category("chair_1") == "chair"
+    assert variants.object_category("floor_lamp_3") == "floor_lamp"
+    assert variants.object_category("rug") == "rug"
+
+
+def test_categories_in_scene_dedup_ordered():
+    real = category_scene()
+    assert variants.categories_in_scene(real) == ["chair", "table", "floor_lamp"]
+
+
+def test_subst_within_records_intent_on_degradation():
+    real = category_scene()
+    scene, intent = variants.build_subst_scene(
+        real, "within", scene_dir="/nonexistent", seed=1
+    )
+    assert len(scene) == 4
+    assert intent == {o["new_object_id"]: "within" for o in real}
+
+
+def test_subst_cross_records_target_category_intent():
+    real = category_scene()
+    scene, intent = variants.build_subst_scene(
+        real, "cross", scene_dir="/nonexistent", seed=1
+    )
+    assert len(scene) == 4
+    # Every object records a cross-category target that differs from its own.
+    for o in real:
+        obj_id = o["new_object_id"]
+        own_cat = variants.object_category(obj_id)
+        recorded = intent[obj_id]
+        assert recorded.startswith("cross:")
+        target = recorded.split(":", 1)[1]
+        assert target != own_cat
+        assert target in variants.categories_in_scene(real)
+
+
+def test_subst_cross_deterministic_with_seed():
+    real = category_scene()
+    _, a = variants.build_subst_scene(real, "cross", "/nonexistent", seed=7)
+    _, b = variants.build_subst_scene(real, "cross", "/nonexistent", seed=7)
+    _, c = variants.build_subst_scene(real, "cross", "/nonexistent", seed=8)
+    assert a == b
+    # Different seed should (with high probability) change at least one target.
+    assert a != c
+
+
+def test_subst_unknown_mode_raises():
+    with pytest.raises(ValueError):
+        variants.build_subst_scene(category_scene(), "sideways", "/nonexistent")
 
 
 # ---------------------------------------------------------------------------

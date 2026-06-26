@@ -311,7 +311,7 @@ def main(argv: Optional[list] = None) -> None:
     )
     parser.add_argument(
         "--phase",
-        choices=["1a", "1b", "1c", "1d", "2", "all"],
+        choices=cfg.ALL_PHASES + ["all"],
         default="all",
     )
     args = parser.parse_args(argv)
