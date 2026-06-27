@@ -43,7 +43,7 @@ class JSONSchemaAgent(UserProxyAgent):
 config_list_gpt4 = autogen.config_list_from_json(
     "OAI_CONFIG_LIST.json",
     filter_dict={
-        "model": ["gpt-4-1106-preview"],
+        "model": ["gpt-5.1-2025-11-13"],
     },
 )
 

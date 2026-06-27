@@ -108,13 +108,26 @@ def preprocess_scene_graph(scene_graph):
                 # Delete that relationship
                 obj["placement"]["objects_in_room"] = [x for x in obj["placement"]["objects_in_room"] if x["object_id"] != "middle of the room"]
                 continue
+            # Some LLMs put room layout elements (walls / ceiling) under
+            # objects_in_room instead of room_layout_elements. Relocate them to
+            # room_layout_elements rather than failing.
+            if elem["object_id"] in ROOM_LAYOUT_ELEMENTS:
+                prep = elem.get("preposition", "on")
+                if prep not in ["on", "in the corner"]:
+                    prep = "on"
+                obj["placement"]["room_layout_elements"].append(
+                    {"layout_element_id": elem["object_id"], "preposition": prep}
+                )
+                obj["placement"]["objects_in_room"] = [x for x in obj["placement"]["objects_in_room"] if x["object_id"] != elem["object_id"]]
+                continue
             if elem["object_id"] not in [x["new_object_id"] for x in scene_graph]:
                 closest_id = next(iter([x["new_object_id"] for x in scene_graph if elem["object_id"] in x["new_object_id"]]), None)
                 if closest_id is not None:
                     elem["object_id"] = closest_id
                 else:
-                    print(f"Object {elem['object_id']} not found in scene graph!")
-                    raise ValueError("Object not found in scene graph!")
+                    print(f"Object {elem['object_id']} not found in scene graph; dropping the relation.")
+                    obj["placement"]["objects_in_room"] = [x for x in obj["placement"]["objects_in_room"] if x["object_id"] != elem["object_id"]]
+                    continue
     return scene_graph
 
 def build_graph(scene_graph):

@@ -11,7 +11,7 @@ from schemas import initial_schema, interior_architect_schema, interior_designer
 config_list_gpt4_prev = autogen.config_list_from_json(
     "OAI_CONFIG_LIST.json",
     filter_dict={
-        "model": ["gpt-4-1106-preview"],
+        "model": ["gpt-5.1-2025-11-13"],
     },
 )
 
@@ -19,7 +19,7 @@ config_list_gpt4_prev = autogen.config_list_from_json(
 config_list_gpt4 = autogen.config_list_from_json(
     "OAI_CONFIG_LIST.json",
     filter_dict={
-        "model": ["gpt-4"],
+        "model": ["gpt-5.1-2025-11-13"],
     },
 )
 
