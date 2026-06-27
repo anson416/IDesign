@@ -1,4 +1,3 @@
-import openshape
 from huggingface_hub import hf_hub_download
 import torch
 import json
@@ -24,11 +23,13 @@ except Exception:
 _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 print("Device: ", torch.cuda.get_device_name(0) if _DEVICE == "cuda" else "cpu")
 
-# NOTE: the point-cloud encoder (MinkowskiEngine) is NOT used by the text->asset
-# retrieval path below, which queries precomputed embeddings with the CLIP text
-# encoder only. It is loaded lazily/optionally to avoid a heavy CUDA build.
+# NOTE: the point-cloud encoder (openshape -> dgl/MinkowskiEngine) is NOT used
+# by the text->asset retrieval path below, which queries precomputed embeddings
+# with the CLIP text encoder only. We avoid importing openshape at module load
+# (it transitively imports dgl) and only load it if explicitly requested.
 pc_encoder = None
 if os.environ.get("VLMUNR_LOAD_PC_ENCODER") == "1":
+    import openshape
     pc_encoder = openshape.load_pc_encoder('openshape-pointbert-vitg14-rgb')
 
 # Get the pre-computed embeddings
