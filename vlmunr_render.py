@@ -152,10 +152,13 @@ def _import_and_join_glb(bpa, glb_path: str, obj_id: str):
         bpy.ops.import_scene.gltf(filepath=glb_path)
     new_objs = [o for o in bpy.context.scene.objects if o not in before]
     meshes = [o for o in new_objs if o.type == "MESH"]
+    # Record empties by NAME up front; joining invalidates Object references.
+    empty_names = [o.name for o in new_objs if o.type == "EMPTY"]
     if not meshes:
         # Clean up any empties imported.
-        for o in new_objs:
-            bpy.data.objects.remove(o, do_unlink=True)
+        for nm in [o.name for o in new_objs]:
+            if nm in bpy.data.objects:
+                bpy.data.objects.remove(bpy.data.objects[nm], do_unlink=True)
         return None
 
     bpy.ops.object.select_all(action="DESELECT")
@@ -166,10 +169,11 @@ def _import_and_join_glb(bpa, glb_path: str, obj_id: str):
         bpy.ops.object.join()
     joined = bpy.context.view_layer.objects.active
 
-    # Drop any leftover empties from the import.
-    for o in new_objs:
-        if o.type == "EMPTY" and o.name in bpy.data.objects:
-            bpy.data.objects.remove(o, do_unlink=True)
+    # Drop any leftover empties from the import (re-fetch by name; the join may
+    # have invalidated the original Object references -> ReferenceError).
+    for nm in empty_names:
+        if nm in bpy.data.objects:
+            bpy.data.objects.remove(bpy.data.objects[nm], do_unlink=True)
 
     bpa.focus(joined)
     bpy.ops.object.parent_clear(type="CLEAR_KEEP_TRANSFORM")
