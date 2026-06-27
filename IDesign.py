@@ -133,8 +133,13 @@ class IDesign:
                 """,
             )
             correction = groupchat.messages[-2]
-            pattern = r'```json\s*([^`]+)\s*```' # Match the json object
-            match = re.search(pattern, correction["content"], re.DOTALL).group(1)
+            # Accept fenced (```json ... ```) or raw JSON output from the model.
+            _m = re.search(r'```(?:json)?\s*(.+?)\s*```', correction["content"], re.DOTALL)
+            if _m is not None:
+                match = _m.group(1)
+            else:
+                _b = re.search(r'\{.*\}', correction["content"], re.DOTALL)
+                match = _b.group(0) if _b is not None else correction["content"]
             correction_json = json.loads(match)
             corr_obj = get_object_from_scene_graph(correction_json["corrected_object"]["new_object_id"], scene_graph)
             corr_obj["is_on_the_floor"] = correction_json["corrected_object"]["is_on_the_floor"]

@@ -20,8 +20,16 @@ class JSONSchemaAgent(UserProxyAgent):
         preps_layout = ["left-side", "right-side", "in the middle"]
         preps_objs = ['on', 'left of', 'right of', 'in front', 'behind', 'under', 'above']
 
-        pattern = r'```json\s*([^`]+)\s*```' # Match the json object
-        match = re.search(pattern, message["content"], re.DOTALL).group(1)
+        content = message["content"]
+        # The model may or may not wrap the JSON in ```json ... ``` fences;
+        # accept either, falling back to the first {...} block, then raw content.
+        pattern = r'```(?:json)?\s*(.+?)\s*```'
+        m = re.search(pattern, content, re.DOTALL)
+        if m is not None:
+            match = m.group(1)
+        else:
+            brace = re.search(r'\{.*\}', content, re.DOTALL)
+            match = brace.group(0) if brace is not None else content
 
         json_obj_new = json.loads(match)
 
