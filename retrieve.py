@@ -11,11 +11,25 @@ import objaverse
 from torch.nn import functional as F
 import re
 
-#Print device
-print("Device: ", torch.cuda.get_device_name(0))
+# Redirect the objaverse cache off the tiny home quota (see SERVER_RUN_GUIDE).
+_OBJV_BASE = os.environ.get("VLMUNR_OBJAVERSE_BASE", "/research/d2/fyp24/yflam1/.objaverse_cache")
+try:
+    os.makedirs(_OBJV_BASE, exist_ok=True)
+    objaverse.BASE_PATH = _OBJV_BASE
+    objaverse._VERSIONED_PATH = os.path.join(_OBJV_BASE, "hf-objaverse-v1")
+except Exception:
+    pass
 
-# Load the Pointcloud Encoder
-pc_encoder = openshape.load_pc_encoder('openshape-pointbert-vitg14-rgb')
+# Device (no hard failure on CPU-only hosts).
+_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+print("Device: ", torch.cuda.get_device_name(0) if _DEVICE == "cuda" else "cpu")
+
+# NOTE: the point-cloud encoder (MinkowskiEngine) is NOT used by the text->asset
+# retrieval path below, which queries precomputed embeddings with the CLIP text
+# encoder only. It is loaded lazily/optionally to avoid a heavy CUDA build.
+pc_encoder = None
+if os.environ.get("VLMUNR_LOAD_PC_ENCODER") == "1":
+    pc_encoder = openshape.load_pc_encoder('openshape-pointbert-vitg14-rgb')
 
 # Get the pre-computed embeddings
 meta = json.load(
