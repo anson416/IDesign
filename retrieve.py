@@ -124,7 +124,8 @@ for obj_in_room in objects_in_room:
     tn = clip_prep(
         text=[text], return_tensors='pt', truncation=True, max_length=76
     ).to(device)
-    enc = clip_model.get_text_features(**tn).float().cpu()
+    _enc_raw = clip_model.get_text_features(**tn)
+    enc = (_enc_raw.pooler_output if hasattr(_enc_raw, "pooler_output") else _enc_raw).float().cpu()
     retrieved_obj = retrieve(enc, top=1, sim_th=0.1, filter_fn=get_filter_fn())[0]
     print("Retrieved object: ", retrieved_obj["u"])
     processes = multiprocessing.cpu_count()

@@ -128,6 +128,9 @@ def load_scene_into_blender(
 
     placed = 0
     for item in iter_real_objects(scene_graph):
+        # Skip objects that were never placed (position is None)
+        if item.get("position") is None:
+            continue
         obj_id = item["new_object_id"]
         glb_path = os.path.join(assets, f"{obj_id}.glb")
         if not os.path.exists(glb_path):

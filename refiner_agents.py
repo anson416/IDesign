@@ -37,12 +37,11 @@ class JSONSchemaAgent(UserProxyAgent):
             return "SUCCESS"
         return feedback
 
-config_list_gpt4 = autogen.config_list_from_json(
-    "OAI_CONFIG_LIST.json",
-    filter_dict={
-        "model": ["gpt-5.1-2025-11-13"],
-    },
-)
+import os as _os
+_API_KEY_RA = _os.environ.get("OPENAI_API_KEY") or _os.environ.get("CHATANYWHERE_API_KEY", "")
+_BASE_URL_RA = _os.environ.get("OPENAI_BASE_URL", "https://api.chatanywhere.tech/v1")
+_JSON_MODEL_RA = _os.environ.get("VLMUNR_IDESIGN_JSON_MODEL", "gpt-4o")
+config_list_gpt4 = [{"model": _JSON_MODEL_RA, "api_key": _API_KEY_RA, "base_url": _BASE_URL_RA}]
 
 gpt4_config = {
     "cache_seed": 42,

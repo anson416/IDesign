@@ -44,7 +44,10 @@ def is_point_bbox(position):
     return np.isclose(position[0], position[1]) and np.isclose(position[2], position[3]) and np.isclose(position[4], position[5])
 
 def get_rotation(obj_A, scene_graph):
-    # Get the rotation of an object in the scene graph
+    # Get the rotation of an object in the scene graph.
+    # obj_A may be None when a referenced object_id doesn't exist in the graph.
+    if obj_A is None:
+        return 0.0
     layout_rot = {
         "west_wall" : 270.0,
         "east_wall" : 90.0,
