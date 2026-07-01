@@ -65,11 +65,7 @@ REMOVAL_VARIANTS = {
 # the default used by test.py; override via generate_variants(room_dims=...).
 DEFAULT_ROOM_DIMS = [4.0, 4.0, 2.5]
 
-ALT_VARIANTS = {
-    "variant_alt_0": 0,
-    "variant_alt_2": 2,
-    "variant_alt_4": 4,
-}
+ALT_VARIANTS = {}  # VLMUNR: alt_* dropped
 
 # Substitution modes routed through the same lazy retrieval hook.
 SUBST_VARIANTS = {

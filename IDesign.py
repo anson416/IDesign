@@ -251,7 +251,11 @@ class IDesign:
             invalid_name_ids = []
             for child in new_relationships["children_objects"]:
                 for other_child in child["placement"]["children_objects"]:
-                    other_child_rot = get_rotation(get_object_from_scene_graph(other_child["name_id"], self.scene_graph["objects_in_room"]), self.scene_graph["objects_in_room"])
+                    # VLMUNR_PATCH refine_design skip-missing
+                    _oc_obj = get_object_from_scene_graph(other_child["name_id"], self.scene_graph["objects_in_room"])
+                    if _oc_obj is None:
+                        invalid_name_ids.append(child["name_id"]); continue
+                    other_child_rot = get_rotation(_oc_obj, self.scene_graph["objects_in_room"])
                     if direction_check(other_child_rot - parent_obj_rot, prep) and other_child["preposition"] not in ["in front", "behind"]:
                         invalid_name_ids.append(child["name_id"])
                     elif not direction_check(other_child_rot - parent_obj_rot, prep) and other_child["preposition"] not in ["left of", "right of"]:

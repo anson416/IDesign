@@ -38,6 +38,70 @@ ROOM_PRIOR_IDS = frozenset(
 )
 
 
+_VLMUNR_WALLS = []
+
+
+def _build_idesign_shell(scene_dir):
+    """Build floor+walls from the I-Design scene_graph shell entries.
+
+    Shell entries: itemType 'floor'|'wall', Z-up meters, position=box center,
+    size_in_meters={length,width,height}. We derive the floor polygon from the
+    floor entry's footprint (a rectangle centered at its position) and build a
+    dollhouse shell. Returns the list of wall objects (tagged) for culling.
+    """
+    import json as _json, os as _os
+    try:
+        import bpy  # noqa
+        import vlmunr_shell as _vs
+    except Exception as _e:
+        return []
+    def _load_shell(sg):
+        _floor = None
+        _wh = 2.5
+        for it in sg:
+            if not isinstance(it, dict):
+                continue
+            t = it.get("itemType")
+            if t == "floor":
+                _floor = it
+            elif t == "wall":
+                h = (it.get("size_in_meters") or {}).get("height")
+                if h:
+                    _wh = float(h)
+        return _floor, _wh
+    sg_path = _os.path.join(scene_dir, "scene_graph.json")
+    try:
+        sg = _json.load(open(sg_path))
+    except Exception:
+        return []
+    floor, wh = _load_shell(sg)
+    if floor is None:
+        # Variant scene_graphs (removal/scramble/subst) drop the floor/wall/
+        # ceiling shell entries, so fall back to the BASE scene's scene_graph.
+        _base = _os.path.join(
+            _os.path.dirname(_os.path.abspath(scene_dir.rstrip("/"))),
+            "scene", "scene_graph.json")
+        if _os.path.isfile(_base):
+            try:
+                floor, wh = _load_shell(_json.load(open(_base)))
+            except Exception:
+                pass
+    if floor is None:
+        return []
+    pos = floor.get("position", {})
+    sz = floor.get("size_in_meters", {})
+    cx, cy = float(pos.get("x", 0.0)), float(pos.get("y", 0.0))
+    L = float(sz.get("length", 4.0)); W = float(sz.get("width", 4.0))
+    hx, hy = L / 2.0, W / 2.0
+    verts = [(cx - hx, cy - hy), (cx + hx, cy - hy),
+             (cx + hx, cy + hy), (cx - hx, cy + hy)]
+    try:
+        return _vs.build_room_shell(bpy, verts, wh, margin=0.0, ceiling=False)
+    except Exception as _e:
+        print("VLMUNR shell build failed:", _e)
+        return []
+
+
 def is_real_object(item: dict) -> bool:
     if "itemType" in item:
         return False
@@ -226,6 +290,9 @@ def render_phases(
     # Build the scene once.
     bpa.clear()
     n = load_scene_into_blender(scene_dir, assets_dir=assets_dir)
+    # VLMUNR_PATCH room shell
+    global _VLMUNR_WALLS
+    _VLMUNR_WALLS = _build_idesign_shell(scene_dir)
     if n == 0:
         raise RuntimeError(f"No objects placed from {scene_dir!r}")
 
@@ -278,6 +345,11 @@ def _render_configs(bpa, renderer, configs, out_root) -> list:
         master_path = os.path.join(
             out_root, master_filename(res, focal, pitch, yaw, hdri)
         )
+        try:
+            import vlmunr_shell as _vs
+            _vs.cull_walls(globals().get('_VLMUNR_WALLS', []), pitch, yaw)
+        except Exception as _e:
+            pass
         center, radius = renderer.compute_bounding_sphere()
         renderer.render_perspective(
             master_path,
@@ -286,6 +358,7 @@ def _render_configs(bpa, renderer, configs, out_root) -> list:
             rotation=(pitch, 0, yaw),
             resolution=res,
             focal_length=focal,
+            fit_ratio=0.6,
             background=None,
         )
         written.append(master_path)
