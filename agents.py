@@ -3,25 +3,23 @@ from autogen.agentchat.agent import Agent
 from autogen.agentchat.user_proxy_agent import UserProxyAgent
 from autogen.agentchat.assistant_agent import AssistantAgent
 import json
+import os
 from jsonschema import validate
 from copy import deepcopy
 
 from schemas import initial_schema, interior_architect_schema, interior_designer_schema, engineer_schema
 
-config_list_gpt4_prev = autogen.config_list_from_json(
-    "OAI_CONFIG_LIST.json",
-    filter_dict={
-        "model": ["gpt-4-1106-preview"],
-    },
-)
+_API_KEY = os.environ.get("OPENAI_API_KEY") or os.environ.get("CHATANYWHERE_API_KEY", "")
+_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.chatanywhere.tech/v1")
+_MODEL = "gpt-5.1-2025-11-13"
 
-# OAI_CONFIG_LIST.json is needed! Check the Autogen repo for more info!
-config_list_gpt4 = autogen.config_list_from_json(
-    "OAI_CONFIG_LIST.json",
-    filter_dict={
-        "model": ["gpt-4"],
-    },
-)
+_CONFIG_ENTRY = {"model": _MODEL, "api_key": _API_KEY, "base_url": _BASE_URL}
+# Use gpt-4o for JSON-mode calls (gpt-5.1 + json_object triggers proxy content filter)
+_JSON_MODEL = os.environ.get("VLMUNR_IDESIGN_JSON_MODEL", "gpt-4o")
+_JSON_ENTRY = {"model": _JSON_MODEL, "api_key": _API_KEY, "base_url": _BASE_URL}
+
+config_list_gpt4_prev = [_CONFIG_ENTRY]
+config_list_gpt4 = [_CONFIG_ENTRY]
 
 gpt4_prev_config = {
     "cache_seed": 42,
@@ -41,11 +39,11 @@ gpt4_config = {
 
 gpt4_json_config = deepcopy(gpt4_prev_config)
 gpt4_json_config["temperature"] = 0.7
-gpt4_json_config["config_list"][0]["response_format"] = { "type": "json_object" }
+gpt4_json_config["config_list"] = [dict(_JSON_ENTRY, **{"response_format": { "type": "json_object" }})]
 
 gpt4_json_engineer_config = deepcopy(gpt4_prev_config)
 gpt4_json_engineer_config["temperature"] = 0.0
-gpt4_json_engineer_config["config_list"][0]["response_format"] = { "type": "json_object" }
+gpt4_json_engineer_config["config_list"] = [dict(_JSON_ENTRY, **{"response_format": { "type": "json_object" }})]
 
 def is_termination_msg(content) -> bool:
     have_content = content.get("content", None) is not None

@@ -133,8 +133,13 @@ class IDesign:
                 """,
             )
             correction = groupchat.messages[-2]
-            pattern = r'```json\s*([^`]+)\s*```' # Match the json object
-            match = re.search(pattern, correction["content"], re.DOTALL).group(1)
+            # Accept fenced (```json ... ```) or raw JSON output from the model.
+            _m = re.search(r'```(?:json)?\s*(.+?)\s*```', correction["content"], re.DOTALL)
+            if _m is not None:
+                match = _m.group(1)
+            else:
+                _b = re.search(r'\{.*\}', correction["content"], re.DOTALL)
+                match = _b.group(0) if _b is not None else correction["content"]
             correction_json = json.loads(match)
             corr_obj = get_object_from_scene_graph(correction_json["corrected_object"]["new_object_id"], scene_graph)
             corr_obj["is_on_the_floor"] = correction_json["corrected_object"]["is_on_the_floor"]
@@ -246,7 +251,11 @@ class IDesign:
             invalid_name_ids = []
             for child in new_relationships["children_objects"]:
                 for other_child in child["placement"]["children_objects"]:
-                    other_child_rot = get_rotation(get_object_from_scene_graph(other_child["name_id"], self.scene_graph["objects_in_room"]), self.scene_graph["objects_in_room"])
+                    # VLMUNR_PATCH refine_design skip-missing
+                    _oc_obj = get_object_from_scene_graph(other_child["name_id"], self.scene_graph["objects_in_room"])
+                    if _oc_obj is None:
+                        invalid_name_ids.append(child["name_id"]); continue
+                    other_child_rot = get_rotation(_oc_obj, self.scene_graph["objects_in_room"])
                     if direction_check(other_child_rot - parent_obj_rot, prep) and other_child["preposition"] not in ["in front", "behind"]:
                         invalid_name_ids.append(child["name_id"])
                     elif not direction_check(other_child_rot - parent_obj_rot, prep) and other_child["preposition"] not in ["left of", "right of"]:

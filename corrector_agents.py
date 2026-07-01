@@ -20,8 +20,16 @@ class JSONSchemaAgent(UserProxyAgent):
         preps_layout = ["left-side", "right-side", "in the middle"]
         preps_objs = ['on', 'left of', 'right of', 'in front', 'behind', 'under', 'above']
 
-        pattern = r'```json\s*([^`]+)\s*```' # Match the json object
-        match = re.search(pattern, message["content"], re.DOTALL).group(1)
+        content = message["content"]
+        # The model may or may not wrap the JSON in ```json ... ``` fences;
+        # accept either, falling back to the first {...} block, then raw content.
+        pattern = r'```(?:json)?\s*(.+?)\s*```'
+        m = re.search(pattern, content, re.DOTALL)
+        if m is not None:
+            match = m.group(1)
+        else:
+            brace = re.search(r'\{.*\}', content, re.DOTALL)
+            match = brace.group(0) if brace is not None else content
 
         json_obj_new = json.loads(match)
 
@@ -40,12 +48,11 @@ class JSONSchemaAgent(UserProxyAgent):
             return "SUCCESS"
         return feedback
 
-config_list_gpt4 = autogen.config_list_from_json(
-    "OAI_CONFIG_LIST.json",
-    filter_dict={
-        "model": ["gpt-4-1106-preview"],
-    },
-)
+import os as _os
+_API_KEY_CC = _os.environ.get("OPENAI_API_KEY") or _os.environ.get("CHATANYWHERE_API_KEY", "")
+_BASE_URL_CC = _os.environ.get("OPENAI_BASE_URL", "https://api.chatanywhere.tech/v1")
+_JSON_MODEL_CC = _os.environ.get("VLMUNR_IDESIGN_JSON_MODEL", "gpt-4o")
+config_list_gpt4 = [{"model": _JSON_MODEL_CC, "api_key": _API_KEY_CC, "base_url": _BASE_URL_CC}]
 
 gpt4_config = {
     "cache_seed": 42,
