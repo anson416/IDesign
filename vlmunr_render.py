@@ -78,14 +78,25 @@ def _build_idesign_shell(scene_dir):
     if floor is None:
         # Variant scene_graphs (removal/scramble/subst) drop the floor/wall/
         # ceiling shell entries, so fall back to the BASE scene's scene_graph.
-        _base = _os.path.join(
-            _os.path.dirname(_os.path.abspath(scene_dir.rstrip("/"))),
-            "scene", "scene_graph.json")
-        if _os.path.isfile(_base):
-            try:
-                floor, wh = _load_shell(_json.load(open(_base)))
-            except Exception:
-                pass
+        import re as _re
+        _sd = _os.path.abspath(scene_dir.rstrip("/"))
+        _parent = _os.path.dirname(_sd)
+        _name = _os.path.basename(_sd)
+        _candidates = []
+        # full-run layout: "<label>_variant_<v>" -> base "<label>"
+        _m = _re.match(r"^(.*)_variant_.+$", _name)
+        if _m:
+            _candidates.append(_os.path.join(_parent, _m.group(1), "scene_graph.json"))
+        # old smoke layout: sibling "scene/"
+        _candidates.append(_os.path.join(_parent, "scene", "scene_graph.json"))
+        for _base in _candidates:
+            if _os.path.isfile(_base):
+                try:
+                    floor, wh = _load_shell(_json.load(open(_base)))
+                    if floor is not None:
+                        break
+                except Exception:
+                    pass
     if floor is None:
         return []
     pos = floor.get("position", {})

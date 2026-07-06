@@ -361,7 +361,13 @@ class IDesign:
             print("Topological order: ", topological_order)
         
         d = 1
+        _backtrack_iters = 0
+        _MAX_BACKTRACK_ITERS = 50  # hard cap: oscillating solver gives up, keeps partial placement
         while d <= max_depth:   
+            if _backtrack_iters >= _MAX_BACKTRACK_ITERS:
+                print(f"BACKTRACK_CAP: hit {_MAX_BACKTRACK_ITERS} iterations at depth {d}/{max_depth}; saving partial placement")
+                break
+            _backtrack_iters += 1
             if verbose:
                 print("Depth: ", d)
             error_flag = False
@@ -403,6 +409,21 @@ class IDesign:
                 d += 1
         if verbose:
             get_visualization(self.scene_graph, self.room_priors)
+        # Fallback: give random floor positions to any objects backtrack could not place
+        import random as _rng
+        _prior_ids = {"south_wall", "north_wall", "east_wall", "west_wall", "ceiling", "middle of the room"}
+        for _item in self.scene_graph:
+            if _item.get("new_object_id") in _prior_ids:
+                continue
+            if _item.get("position") is None:
+                _item["position"] = {
+                    "x": _rng.uniform(0.4, self.room_dimensions[0] - 0.4),
+                    "y": _rng.uniform(0.4, self.room_dimensions[1] - 0.4),
+                    "z": 0.0,
+                }
+                if "rotation" not in _item:
+                    _item["rotation"] = {"z_angle": 0.0}
+                print("FALLBACK_POS:", _item.get("new_object_id"))
     
     def to_json(self, filename="scene_graph.json"):
         # Save the scene graph to a json file
