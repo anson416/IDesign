@@ -119,7 +119,18 @@ def _maybe_load_retrieval_backend(args):
     try:
         import retrieve
 
-        retrieve.load_backend()
+        # The OpenShape embedding repo is gated; honour an explicit token,
+        # else rely on a cached HF login / HF_TOKEN env.
+        hf_token = getattr(args, "hf_token", None)
+        if hf_token:
+            os.environ["HF_TOKEN"] = hf_token
+            os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+        embeddings_dir = getattr(args, "embeddings_dir", None)
+        objaverse_cache_dir = getattr(args, "objaverse_cache_dir", None)
+        retrieve.load_backend(
+            embeddings_dir=embeddings_dir,
+            objaverse_cache_dir=objaverse_cache_dir,
+        )
         return retrieve.backend_available()
     except Exception as e:
         print(f"[cli] retrieval backend unavailable ({e}); "
@@ -194,6 +205,17 @@ def main(argv: Optional[list] = None) -> int:
                         help="Download 3D assets (best match for base, worst "
                              "match for variant_04) via OpenShape/CLIP. Needs "
                              "GPU + ~3GB embeddings; degrades gracefully.")
+    parser.add_argument("--embeddings-dir", default=None,
+                        help="Directory for the OpenShape embedding bank "
+                             "(objaverse_meta.json + objaverse.pt). Defaults to "
+                             "./OpenShape-Embeddings (downloaded on first use).")
+    parser.add_argument("--objaverse-cache-dir", default=None,
+                        help="Directory for the objaverse .glb cache "
+                             "(downloaded assets). Defaults to ~/.objaverse_cache.")
+    parser.add_argument("--hf-token", default=None,
+                        help="HuggingFace access token for the (gated) OpenShape "
+                             "embedding repo. Falls back to the HF_TOKEN env var "
+                             "or a cached `huggingface-cli login`.")
     parser.add_argument("--verbose", action="store_true",
                         help="Verbose pipeline output (conflicts, depths).")
     parser.add_argument("--outputs-root", default="outputs",

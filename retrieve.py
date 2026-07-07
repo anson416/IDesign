@@ -81,6 +81,12 @@ class RetrievalBackend:
         self.feats = None  # (N, D) embedding tensor
         self.meta = None  # uid -> metadata dict
         self._device = "cpu"
+        # External resource locations (override before load()):
+        #   embeddings_dir   -> where the OpenShape embedding bank is cached
+        #   objaverse_cache_dir -> where objaverse.load_objects writes .glb
+        # Both default to None, which means "use the env / upstream defaults".
+        self.embeddings_dir = None
+        self.objaverse_cache_dir = None
 
     @property
     def available(self) -> bool:
@@ -99,6 +105,14 @@ class RetrievalBackend:
         if objaverse is None:
             import objaverse  # type: ignore
 
+        # Redirect the objaverse .glb cache off the home quota if requested.
+        if self.objaverse_cache_dir:
+            os.makedirs(self.objaverse_cache_dir, exist_ok=True)
+            objaverse.BASE_PATH = self.objaverse_cache_dir
+            objaverse._VERSIONED_PATH = os.path.join(
+                self.objaverse_cache_dir, "hf-objaverse-v1"
+            )
+
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self._device = device
         print(
@@ -106,8 +120,13 @@ class RetrievalBackend:
             torch.cuda.get_device_name(0) if device == "cuda" else "cpu",
         )
 
-        # Pre-computed embeddings (downloaded into ./OpenShape-Embeddings).
-        emb_dir = "OpenShape-Embeddings"
+        # Pre-computed embeddings. Default location is ./OpenShape-Embeddings
+        # (matching upstream); override via self.embeddings_dir set by the
+        # caller before load(), or the VLMUNR_EMBEDDINGS_DIR env var.
+        emb_dir = self.embeddings_dir or os.environ.get(
+            "VLMUNR_EMBEDDINGS_DIR", "OpenShape-Embeddings"
+        )
+        os.makedirs(emb_dir, exist_ok=True)
         meta = json.load(
             open(
                 hf_hub_download(
@@ -206,8 +225,16 @@ class RetrievalBackend:
 _BACKEND: Optional[RetrievalBackend] = None
 
 
-def load_backend(force: bool = False) -> RetrievalBackend:
+def load_backend(
+    force: bool = False,
+    embeddings_dir: Optional[str] = None,
+    objaverse_cache_dir: Optional[str] = None,
+) -> RetrievalBackend:
     """Load (or return the cached) retrieval backend.
+
+    embeddings_dir / objaverse_cache_dir override where the OpenShape embedding
+    bank and the objaverse .glb cache are stored; ignored if the backend is
+    already loaded (call with force=True to re-apply).
 
     Raises RuntimeError if torch / transformers / huggingface assets are
     unavailable. Callers that can tolerate absence should catch and degrade.
@@ -215,6 +242,10 @@ def load_backend(force: bool = False) -> RetrievalBackend:
     global _BACKEND
     if _BACKEND is None or force or not _BACKEND.available:
         backend = RetrievalBackend()
+        if embeddings_dir:
+            backend.embeddings_dir = embeddings_dir
+        if objaverse_cache_dir:
+            backend.objaverse_cache_dir = objaverse_cache_dir
         backend.load()
         _BACKEND = backend
     return _BACKEND
