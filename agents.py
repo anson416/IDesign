@@ -4,46 +4,100 @@ from autogen.agentchat.user_proxy_agent import UserProxyAgent
 from autogen.agentchat.assistant_agent import AssistantAgent
 import json
 import os
+from dataclasses import dataclass, field
 from jsonschema import validate
 from copy import deepcopy
+from typing import Optional
 
 from schemas import initial_schema, interior_architect_schema, interior_designer_schema, engineer_schema
 
-_API_KEY = os.environ.get("OPENAI_API_KEY") or os.environ.get("CHATANYWHERE_API_KEY", "")
-_BASE_URL = os.environ.get("OPENAI_BASE_URL", "https://api.chatanywhere.tech/v1")
-_MODEL = "gpt-5.1-2025-11-13"
 
-_CONFIG_ENTRY = {"model": _MODEL, "api_key": _API_KEY, "base_url": _BASE_URL}
-# Use gpt-4o for JSON-mode calls (gpt-5.1 + json_object triggers proxy content filter)
-_JSON_MODEL = os.environ.get("VLMUNR_IDESIGN_JSON_MODEL", "gpt-4o")
-_JSON_ENTRY = {"model": _JSON_MODEL, "api_key": _API_KEY, "base_url": _BASE_URL}
+@dataclass
+class LLMConfig:
+    """Runtime-configurable LLM parameters threaded through every agent.
 
-config_list_gpt4_prev = [_CONFIG_ENTRY]
-config_list_gpt4 = [_CONFIG_ENTRY]
+    All fields default to the original hardcoded/env behaviour so callers that
+    pass nothing (e.g. upstream `test.py`) keep working unchanged.
+    """
 
-gpt4_prev_config = {
-    "cache_seed": 42,
-    "temperature": 0.7,
-    "top_p" : 1.0,
-    "config_list": config_list_gpt4_prev,
-    "timeout": 600,
-}
+    model: str = "gpt-5.1-2025-11-13"
+    base_url: str = field(
+        default_factory=lambda: os.environ.get(
+            "OPENAI_BASE_URL", "https://api.chatanywhere.tech/v1"
+        )
+    )
+    api_key: str = field(
+        default_factory=lambda: os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("CHATANYWHERE_API_KEY", "")
+    )
+    temperature: float = 0.7
+    # Model used for JSON-object-mode calls (engineer + json schema debugger).
+    # gpt-5.x + json_object triggers the chatanywhere proxy content filter, so
+    # this defaults to gpt-4o unless overridden. None -> reuse `model`.
+    json_model: Optional[str] = field(
+        default_factory=lambda: os.environ.get(
+            "VLMUNR_IDESIGN_JSON_MODEL", "gpt-4o"
+        )
+    )
 
-gpt4_config = {
-    "cache_seed": 42,
-    "temperature": 0.7,
-    "top_p" : 1.0,
-    "config_list": config_list_gpt4,
-    "timeout": 600,
-}
 
-gpt4_json_config = deepcopy(gpt4_prev_config)
-gpt4_json_config["temperature"] = 0.7
-gpt4_json_config["config_list"] = [dict(_JSON_ENTRY, **{"response_format": { "type": "json_object" }})]
+def build_configs(llm_config: Optional[LLMConfig] = None) -> dict:
+    """Build the four autogen llm_config dicts from an LLMConfig.
 
-gpt4_json_engineer_config = deepcopy(gpt4_prev_config)
-gpt4_json_engineer_config["temperature"] = 0.0
-gpt4_json_engineer_config["config_list"] = [dict(_JSON_ENTRY, **{"response_format": { "type": "json_object" }})]
+    Returns a dict with keys:
+        manager   - chat config for GroupChatManager speaker selection
+        chat      - assistant agents using plain text (designer, architect,
+                    spatial corrector)
+        json      - assistant agents using response_format json_object
+        engineer  - engineer agent (json_object, temperature from config)
+
+    The temperature is applied uniformly to all agents (per the CLI
+    requirement); previously the engineer was pinned to 0.0.
+    """
+    cfg = llm_config if llm_config is not None else LLMConfig()
+    model = cfg.model
+    json_model = cfg.json_model if cfg.json_model else model
+
+    chat_entry = {"model": model, "api_key": cfg.api_key, "base_url": cfg.base_url}
+    json_entry = {
+        "model": json_model,
+        "api_key": cfg.api_key,
+        "base_url": cfg.base_url,
+    }
+
+    base = {
+        "cache_seed": 42,
+        "temperature": cfg.temperature,
+        "config_list": [chat_entry],
+        "timeout": 600,
+    }
+    chat_config = deepcopy(base)
+
+    json_config = deepcopy(base)
+    json_config["config_list"] = [
+        dict(json_entry, **{"response_format": {"type": "json_object"}})
+    ]
+
+    engineer_config = deepcopy(base)
+    engineer_config["temperature"] = cfg.temperature
+    engineer_config["config_list"] = [
+        dict(json_entry, **{"response_format": {"type": "json_object"}})
+    ]
+
+    return {
+        "manager": chat_config,
+        "chat": chat_config,
+        "json": json_config,
+        "engineer": engineer_config,
+    }
+
+
+# ---- Backward-compatible module-level configs (used by upstream test.py). ----
+_DEFAULT_CFG = build_configs()
+gpt4_prev_config = _DEFAULT_CFG["chat"]
+gpt4_config = _DEFAULT_CFG["manager"]
+gpt4_json_config = _DEFAULT_CFG["json"]
+gpt4_json_engineer_config = _DEFAULT_CFG["engineer"]
 
 def is_termination_msg(content) -> bool:
     have_content = content.get("content", None) is not None
@@ -85,7 +139,8 @@ class JSONSchemaAgent(UserProxyAgent):
             return "SUCCESS"
         return feedback
 
-def create_agents(no_of_objects : int):
+def create_agents(no_of_objects : int, llm_config: Optional[LLMConfig] = None):
+    cfg = build_configs(llm_config)
     user_proxy = autogen.UserProxyAgent(
         name="Admin",
         system_message = "A human admin.",
@@ -99,7 +154,7 @@ def create_agents(no_of_objects : int):
     )
     interior_designer = autogen.AssistantAgent(
         name = "Interior_designer",
-        llm_config = gpt4_json_config,
+        llm_config = cfg["json"],
         human_input_mode = "NEVER",
         is_termination_msg = is_termination_msg,
         system_message = f""" Interior Designer. Suggest {no_of_objects} essential new objects to be added to the room based on the user preference, general functionality of the room and the room size.
@@ -122,7 +177,7 @@ def create_agents(no_of_objects : int):
 
     interior_architect = autogen.AssistantAgent(
         name = "Interior_architect",
-        llm_config = gpt4_json_config,
+        llm_config = cfg["json"],
         human_input_mode = "NEVER",
         is_termination_msg = is_termination_msg,
         system_message = f""" Interior Architect. Your role is to analyze the user preference, think about where the optimal
@@ -158,7 +213,7 @@ def create_agents(no_of_objects : int):
 
     engineer = autogen.AssistantAgent(
         name = "Engineer",
-        llm_config = gpt4_json_engineer_config,
+        llm_config = cfg["engineer"],
         human_input_mode = "NEVER",
         is_termination_msg = is_termination_msg,
         system_message = f""" Engineer. You listen to the input by the Admin and create a JSON file.

@@ -4,11 +4,11 @@ import re
 import networkx as nx
 
 from agents import create_agents
-from agents import is_termination_msg, gpt4_config
+from agents import is_termination_msg, LLMConfig, build_configs
 from corrector_agents import get_corrector_agents
 from refiner_agents import get_refiner_agents
 
-from chats import GroupChat, ChatWithEngineer, LayoutCorrectorGroupChat, ObjectDeletionGroupChat, LayoutRefinerGroupChat 
+from chats import GroupChat, ChatWithEngineer, LayoutCorrectorGroupChat, ObjectDeletionGroupChat, LayoutRefinerGroupChat
 
 from utils import get_room_priors, extract_list_from_json
 from utils import preprocess_scene_graph, build_graph, remove_unnecessary_edges, handle_under_prepositions, get_conflicts, get_size_conflicts, get_object_from_scene_graph
@@ -16,17 +16,22 @@ from utils import get_object_from_scene_graph, get_rotation, get_cluster_objects
 from utils import get_cluster_size
 from utils import get_possible_positions, is_point_bbox, calculate_overlap, get_topological_ordering, place_object, get_depth, get_visualization
 
+from typing import Optional
+
 class IDesign:
-    def __init__(self, no_of_objects, user_input, room_dimensions):
+    def __init__(self, no_of_objects, user_input, room_dimensions, llm_config: Optional[LLMConfig] = None):
         self.no_of_objects = no_of_objects
         self.user_input = user_input
         self.room_dimensions = room_dimensions
         self.room_priors = get_room_priors(self.room_dimensions)
         self.scene_graph = None
+        # Config used for GroupChatManager speaker selection across all phases.
+        self._llm_config = llm_config
+        self._manager_llm_config = build_configs(llm_config)["manager"]
 
     def create_initial_design(self):
-        user_proxy, json_schema_debugger, interior_designer, interior_architect, engineer = create_agents(self.no_of_objects)
-        
+        user_proxy, json_schema_debugger, interior_designer, interior_architect, engineer = create_agents(self.no_of_objects, self._llm_config)
+
         groupchat = GroupChat(
             agents=[user_proxy, interior_designer, interior_architect],
             messages=[],
@@ -39,7 +44,7 @@ class IDesign:
             max_round=15
         )
 
-        manager = GroupChatManager(groupchat=groupchat, llm_config=gpt4_config, is_termination_msg=is_termination_msg)
+        manager = GroupChatManager(groupchat=groupchat, llm_config=self._manager_llm_config, is_termination_msg=is_termination_msg)
         user_proxy.initiate_chat(
             manager,
             message=f"""
@@ -72,8 +77,8 @@ class IDesign:
 
             object_ids = [item["new_object_id"] for item in json_data["objects_in_room"]] if json_data is not None else []
 
-            manager = GroupChatManager(groupchat=chat_with_engineer, 
-                                       llm_config=gpt4_config, 
+            manager = GroupChatManager(groupchat=chat_with_engineer,
+                                       llm_config=self._manager_llm_config,
                                        human_input_mode="NEVER", 
                                        is_termination_msg=is_termination_msg)
             user_proxy.initiate_chat(
@@ -116,7 +121,7 @@ class IDesign:
                 print(conflict)
                 print("\n\n")
 
-        user_proxy, spatial_corrector_agent, json_schema_debugger, object_deletion_agent = get_corrector_agents()
+        user_proxy, spatial_corrector_agent, json_schema_debugger, object_deletion_agent = get_corrector_agents(self._llm_config)
 
         while len(conflicts) > 0:
             spatial_corrector_agent.reset(), json_schema_debugger.reset()
@@ -125,7 +130,7 @@ class IDesign:
                 messages=[],
                 max_round=15
             )
-            manager = GroupChatManager(groupchat=groupchat, llm_config=gpt4_config, is_termination_msg=is_termination_msg)
+            manager = GroupChatManager(groupchat=groupchat, llm_config=self._manager_llm_config, is_termination_msg=is_termination_msg)
             user_proxy.initiate_chat(
                 manager,
                 message=f"""
@@ -164,7 +169,7 @@ class IDesign:
                     messages=[],
                     max_round=2
                 )
-                manager = GroupChatManager(groupchat=groupchat, llm_config=gpt4_config, is_termination_msg=is_termination_msg)
+                manager = GroupChatManager(groupchat=groupchat, llm_config=self._manager_llm_config, is_termination_msg=is_termination_msg)
                 user_proxy.initiate_chat(
                     manager,
                     message=f"""
@@ -223,7 +228,7 @@ class IDesign:
             direction_check = lambda diff, prep: (diff % 180 == 0 and prep in ["left of", "right of"]) or (diff % 180 != 0 and prep in ["in front", "behind"]) or (diff % 180 != 0 and prep == "on")
             possibilities_str = "Constraints:\n" + '\n'.join(["\t" + f"Place objects {'`behind` or `in front`' if direction_check(diff, prep) else '`left of` or `right of`'} of {name}!" for name, diff in zip(obj_names, rot_diffs)])
 
-            user_proxy, layout_refiner, json_schema_debugger = get_refiner_agents()
+            user_proxy, layout_refiner, json_schema_debugger = get_refiner_agents(self._llm_config)
 
             layout_refiner.reset(), json_schema_debugger.reset()
             groupchat = LayoutRefinerGroupChat(
@@ -231,7 +236,7 @@ class IDesign:
                 messages=[],
                 max_round=15
             )
-            manager = GroupChatManager(groupchat=groupchat, llm_config=gpt4_config, is_termination_msg=is_termination_msg)
+            manager = GroupChatManager(groupchat=groupchat, llm_config=self._manager_llm_config, is_termination_msg=is_termination_msg)
             user_proxy.initiate_chat(
                 manager,
                 message=f"""

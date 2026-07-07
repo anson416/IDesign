@@ -49,21 +49,13 @@ class JSONSchemaAgent(UserProxyAgent):
         return feedback
 
 import os as _os
-_API_KEY_CC = _os.environ.get("OPENAI_API_KEY") or _os.environ.get("CHATANYWHERE_API_KEY", "")
-_BASE_URL_CC = _os.environ.get("OPENAI_BASE_URL", "https://api.chatanywhere.tech/v1")
-_JSON_MODEL_CC = _os.environ.get("VLMUNR_IDESIGN_JSON_MODEL", "gpt-4o")
-config_list_gpt4 = [{"model": _JSON_MODEL_CC, "api_key": _API_KEY_CC, "base_url": _BASE_URL_CC}]
+from typing import Optional
+from agents import LLMConfig, build_configs
 
-gpt4_config = {
-    "cache_seed": 42,
-    "temperature": 0.0,
-    "config_list": config_list_gpt4,
-    "timeout": 600,
-}
-gpt4_json_config = deepcopy(gpt4_config)
-gpt4_json_config["config_list"][0]["response_format"] = { "type": "json_object" }
-
-def get_corrector_agents():
+def get_corrector_agents(llm_config: Optional[LLMConfig] = None):
+    cfg = build_configs(llm_config)
+    gpt4_config = cfg["chat"]
+    gpt4_json_config = cfg["json"]
     user_proxy = autogen.UserProxyAgent(
         name="Admin",
         system_message = "A human admin.",
