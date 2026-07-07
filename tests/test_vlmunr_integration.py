@@ -151,25 +151,18 @@ def test_generate_variants_writes_six_dirs(tmp_path):
         json.dump(synthetic_scene(16), f)
 
     created = variants.generate_variants(str(scene_dir), seed=42)
+    # 3 removal + 1 scramble + 2 substitution = 6 variant dirs (the alt_*
+    # worst-match variants were dropped in 9a038a4).
     assert set(created) == {
         "variant_half",
         "variant_quarter",
         "variant_eighth",
         "variant_scramble",
-        "variant_alt_0",
-        "variant_alt_2",
-        "variant_alt_4",
         "variant_subst_within",
         "variant_subst_cross",
     }
     for path in created.values():
         assert os.path.exists(os.path.join(path, "scene_graph.json"))
-
-    # alt variant retains intent metadata but renderer ignores it.
-    with open(os.path.join(created["variant_alt_0"], "scene_graph.json")) as f:
-        alt = json.load(f)
-    assert any("_vlmunr_alt_intent" in e for e in alt)
-    assert len(list(render.iter_real_objects(alt))) == 16
 
     # subst variant retains its own intent metadata; renderer ignores it.
     with open(
@@ -419,11 +412,21 @@ def test_subst_unknown_mode_raises():
 # on its output and the PNGs it writes.
 # ---------------------------------------------------------------------------
 
-bpy = pytest.importorskip("bpy")
-
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+import subprocess as _subprocess  # noqa: E402
 
+
+def _bpy_available() -> bool:
+    try:
+        import bpy  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+@pytest.mark.skipif(not _bpy_available(), reason="bpy not installed")
 def test_smoke_render_primitive_cube(tmp_path):
     """Render ONE config on a synthetic 2-cube scene (no real assets) via a
     subprocess, asserting a non-empty master + composite PNG are produced."""
@@ -446,3 +449,97 @@ def test_smoke_render_primitive_cube(tmp_path):
     )
     assert master.exists() and master.stat().st_size > 0
     assert comp.exists() and comp.stat().st_size > 0
+
+
+# ---------------------------------------------------------------------------
+# (e) Named variants (CLI spec): variant_01_half, variant_02_biggest-only,
+#     variant_03_scrambled, variant_04_worst-object.
+# ---------------------------------------------------------------------------
+
+
+def scene_with_sizes():
+    """4 real objects with distinct volumes + room priors."""
+    sg = [make_room_prior("south_wall", "wall"), make_room_prior("ceiling", "ceiling")]
+    # volumes: 1*1*1=1, 2*2*2=8, 3*1*1=3, 1*4*1=4 -> biggest is obj_1 (vol 8)
+    sg.append(make_object("obj_0", l=1.0, w=1.0, h=1.0))
+    sg.append(make_object("obj_1", l=2.0, w=2.0, h=2.0))
+    sg.append(make_object("obj_2", l=3.0, w=1.0, h=1.0))
+    sg.append(make_object("obj_3", l=1.0, w=4.0, h=1.0))
+    return sg
+
+
+def test_build_biggest_only_keeps_single_largest():
+    real = variants.filter_real_objects(scene_with_sizes())
+    out = variants.build_biggest_only_scene(real)
+    assert len(out) == 1
+    # obj_1 has the largest volume (8); ties broken by first occurrence.
+    assert out[0]["new_object_id"] == "obj_1"
+    # input not mutated
+    assert len(real) == 4
+
+
+def test_build_biggest_only_empty_when_no_objects():
+    assert variants.build_biggest_only_scene([]) == []
+
+
+def test_build_worst_object_scene_degrades_without_backend(tmp_path):
+    """When the retrieval backend is not loaded, every object falls back to
+    copying the base asset (or 'worst_missing' if no base asset exists), and
+    the scene graph is preserved unchanged (no regeneration)."""
+    real = variants.filter_real_objects(scene_with_sizes())
+    # No base Assets/ on disk -> 'worst_missing' intent, scene preserved.
+    scene, intent = variants.build_worst_object_scene(
+        real, str(tmp_path), str(tmp_path / "Assets"), rank=0
+    )
+    assert len(scene) == 4
+    assert all(v == "worst_missing" for v in intent.values())
+    # object set unchanged
+    assert {o["new_object_id"] for o in scene} == {o["new_object_id"] for o in real}
+
+
+def test_generate_named_variants_writes_four_dirs(tmp_path):
+    scene_dir = tmp_path / "scene"
+    (scene_dir / "Assets").mkdir(parents=True)
+    import json
+
+    with open(scene_dir / "scene_graph.json", "w") as f:
+        json.dump(scene_with_sizes(), f)
+
+    created = variants.generate_named_variants(str(scene_dir), seed=42)
+    assert set(created) == set(variants.NAMED_VARIANTS)
+    for name, path in created.items():
+        assert os.path.exists(os.path.join(path, "scene_graph.json"))
+
+    # variant_01_half keeps round(4/2)=2 real objects.
+    with open(os.path.join(created["variant_01_half"], "scene_graph.json")) as f:
+        half = json.load(f)
+    assert len(list(render.iter_real_objects(half))) == 2
+
+    # variant_02_biggest-only keeps exactly the single largest object.
+    with open(
+        os.path.join(created["variant_02_biggest-only"], "scene_graph.json")
+    ) as f:
+        big = json.load(f)
+    reals = list(render.iter_real_objects(big))
+    assert len(reals) == 1
+    assert reals[0]["new_object_id"] == "obj_1"
+
+    # variant_03_scrambled keeps all 4 objects but repositions them.
+    with open(
+        os.path.join(created["variant_03_scrambled"], "scene_graph.json")
+    ) as f:
+        scr = json.load(f)
+    scr_reals = list(render.iter_real_objects(scr))
+    assert len(scr_reals) == 4
+    base_reals = variants.filter_real_objects(scene_with_sizes())
+    # positions changed (seeded random within room), object set preserved.
+    assert {o["new_object_id"] for o in scr_reals} == {
+        o["new_object_id"] for o in base_reals
+    }
+    assert any(
+        o["position"]["x"] != b["position"]["x"]
+        for o, b in zip(scr_reals, base_reals)
+    )
+
+    # variant_04_worst-object has its own Assets/ dir.
+    assert os.path.isdir(os.path.join(created["variant_04_worst-object"], "Assets"))

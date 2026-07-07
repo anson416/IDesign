@@ -17,6 +17,25 @@ from typing import Optional
 # never crashes on a missing optional dependency.
 
 
+def _backend_ready() -> bool:
+    """True only if the heavy retrieval backend is ALREADY loaded.
+
+    We intentionally do NOT call load_backend() here: doing so would silently
+    download the ~3GB OpenShape embedding bank + CLIP weights from inside a
+    content-variant generator. The hook represents best-effort retrieval that
+    degrades gracefully when the backend is not already up. Callers that want
+    real retrieval (e.g. the scene CLI) must explicitly call
+    `retrieve.load_backend()` first; if they don't, every hook function below
+    returns None and the variant degrades (asset copied / intent recorded).
+    """
+    try:
+        import retrieve
+
+        return retrieve.backend_available()
+    except Exception:
+        return False
+
+
 def retrieve_worst_match(
     object_id: str, rank: int, scene_dir: str
 ) -> Optional[str]:
@@ -33,6 +52,8 @@ def retrieve_worst_match(
 
         import retrieve  # lazy
 
+        if not _backend_ready():
+            return None  # graceful: variant copies base asset / records intent
         scene_path = _os.path.join(scene_dir, "scene_graph.json")
         with open(scene_path) as f:
             scene_graph = _json.load(f)
@@ -80,6 +101,8 @@ def retrieve_substitute(
     try:
         import retrieve
 
+        if not _backend_ready():
+            return None  # graceful: variant copies base asset / records intent
         if mode == "cross":
             if not target_category:
                 return None

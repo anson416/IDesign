@@ -127,6 +127,32 @@ def build_removal_scene(real_objects: list, divisor: int, seed: int) -> list:
     return [copy.deepcopy(o) for o in select_kept_objects(real_objects, divisor, seed)]
 
 
+def _object_volume(obj: dict) -> float:
+    """Bounding-box volume (length * width * height) of an object, or 0.0 if
+    its size is missing. Used to rank objects by footprint for the
+    biggest-only variant."""
+    size = obj.get("size_in_meters") or {}
+    try:
+        return float(size.get("length", 0.0)) * float(size.get("width", 0.0)) * float(size.get("height", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def build_biggest_only_scene(real_objects: list) -> list:
+    """Keep ONLY the single largest object (by bounding-box volume).
+
+    Ties are broken by original order (the first maximal object wins). The
+    returned list contains a deep copy of that one object. If there are no
+    real objects, returns an empty list. This is the inverse of removal:
+    instead of randomly dropping objects, it keeps the most spatially
+    dominant one and discards the rest -- without regenerating the scene.
+    """
+    if not real_objects:
+        return []
+    best = max(real_objects, key=_object_volume)
+    return [copy.deepcopy(best)]
+
+
 def scramble_positions(real_objects: list, room_dims: list, seed: int) -> list:
     """Relocate every real object to a random position within the room footprint.
 
@@ -189,6 +215,80 @@ def build_alt_scene(
             obj["_vlmunr_alt_asset"] = alt_uid
         else:
             intent[obj_id] = rank
+    return out, intent
+
+
+def build_worst_object_scene(
+    real_objects: list,
+    base_scene_dir: str,
+    variant_assets_dir: str,
+    rank: int = 0,
+) -> tuple[list, dict]:
+    """Fork the scene and re-retrieve the WORST-CLIP-matching 3D asset for
+    each object, without regenerating the scene graph.
+
+    This 'hacks' the retrieval sorting algorithm in retrieve.py: the base
+    scene picks the best CLIP match (rank 0 best-first); this variant instead
+    picks the lowest-similarity candidate that still passes the asset filter
+    (rank 0 from the worst end, or `rank` from the worst end). The scene
+    graph (objects, positions, relations) is preserved unchanged; only the
+    Assets are swapped.
+
+    Each worst-match .glb is downloaded into `variant_assets_dir/<id>.glb`.
+    If retrieval is unavailable (no GPU / no embeddings) or fails for an
+    object, we fall back to copying the BASE scene's `<id>.glb` into the
+    variant Assets dir so the variant still renders, and record the object
+    under intent as "worst_fallback".
+
+    Returns (scene_graph_list, intent_map).
+    """
+    import shutil as _sh
+
+    os.makedirs(variant_assets_dir, exist_ok=True)
+    out = [copy.deepcopy(o) for o in real_objects]
+    intent: dict[str, str] = {}
+    base_assets = os.path.join(os.path.abspath(base_scene_dir), "Assets")
+
+    # Only attempt real retrieval when the heavy backend is ALREADY loaded.
+    # Otherwise we would silently trigger a ~3GB embedding/CLIP download from
+    # inside a variant generator. The CLI loads the backend explicitly before
+    # calling this; on CPU-only hosts it stays None and every object falls back
+    # to copying the base asset (the variant still renders).
+    backend_ok = False
+    try:
+        import retrieve as _ret  # lazy
+
+        backend_ok = _ret.backend_available()
+    except Exception:
+        backend_ok = False
+
+    for obj in out:
+        obj_id = obj["new_object_id"]
+        retrieved_uid = None
+        if backend_ok:
+            try:
+                # Use the object directly (it carries style/material for the
+                # CLIP query). rank selects how far from the worst end.
+                retrieved_uid = _ret.retrieve_asset_for_object(
+                    obj, variant_assets_dir, match="worst", sim_th=0.0,
+                )
+            except Exception:  # backend unavailable for this object
+                retrieved_uid = None
+
+        glb_path = os.path.join(variant_assets_dir, f"{obj_id}.glb")
+        if retrieved_uid is not None and os.path.exists(glb_path):
+            obj["_vlmunr_worst_asset"] = retrieved_uid
+            intent[obj_id] = "worst"
+        else:
+            # Fallback: reuse the base scene's asset so the variant still
+            # renders. This keeps the variant runnable when retrieval is
+            # unavailable (the common case on CPU-only hosts).
+            base_glb = os.path.join(base_assets, f"{obj_id}.glb")
+            if os.path.exists(base_glb):
+                _sh.copy2(base_glb, glb_path)
+                intent[obj_id] = "worst_fallback"
+            else:
+                intent[obj_id] = "worst_missing"
     return out, intent
 
 
@@ -335,6 +435,94 @@ def generate_variants(
             payload = [{"_vlmunr_subst_intent": intent}] + payload
         _write_scene(out_dir, payload, assets_dir)
         created[name] = out_dir
+
+    return created
+
+
+# ----------------------------------------------------------------------------
+# Named variants (CLI spec): variant_01_half, variant_02_biggest-only,
+# variant_03_scrambled, variant_04_worst-object.
+# ----------------------------------------------------------------------------
+
+NAMED_VARIANTS = [
+    "variant_01_half",
+    "variant_02_biggest-only",
+    "variant_03_scrambled",
+    "variant_04_worst-object",
+]
+
+
+def _write_named_scene(out_dir: str, scene_graph: list, assets_dir: str, intent=None) -> None:
+    """Write a named variant's scene_graph.json (a leading intent metadata
+    entry is embedded when present so the file stays one JSON document)."""
+    os.makedirs(out_dir, exist_ok=True)
+    payload: list = list(scene_graph)
+    if intent:
+        payload = [{"_vlmunr_variant_intent": intent}] + payload
+    with open(os.path.join(out_dir, "scene_graph.json"), "w") as f:
+        json.dump(payload, f, indent=2)
+    with open(os.path.join(out_dir, "vlmunr_assets_dir.txt"), "w") as f:
+        f.write(assets_dir)
+
+
+def generate_named_variants(
+    scene_dir: str,
+    seed: int = 42,
+    room_dims: Optional[list] = None,
+    worst_rank: int = 0,
+) -> dict:
+    """Generate the four CLI-named variants as sibling dirs of `scene_dir`.
+
+    Each variant forks the BASE scene (no regeneration):
+      variant_01_half         -> keep round(n/2) real objects (seeded)
+      variant_02_biggest-only -> keep the single largest object (by volume)
+      variant_03_scrambled    -> randomize x/y of every object within the room
+      variant_04_worst-object -> fork + re-retrieve worst-CLIP asset per object
+
+    variant_04 writes its own Assets/ dir (worst-match .glb per object,
+    falling back to copying the base asset when retrieval is unavailable).
+    The other three share the base scene's Assets/ via vlmunr_assets_dir.txt.
+
+    Returns {variant_name: variant_dir}.
+    """
+    if room_dims is None:
+        room_dims = DEFAULT_ROOM_DIMS
+    scene_path = os.path.join(scene_dir, "scene_graph.json")
+    with open(scene_path) as f:
+        scene_graph = json.load(f)
+    real_objects = filter_real_objects(scene_graph)
+
+    parent = os.path.dirname(os.path.abspath(scene_dir.rstrip(os.sep)))
+    base_name = os.path.basename(os.path.abspath(scene_dir.rstrip(os.sep)))
+    base_assets = os.path.join(os.path.abspath(scene_dir), "Assets")
+    created: dict[str, str] = {}
+
+    # variant_01_half
+    half_scene = build_removal_scene(real_objects, 2, seed)
+    out_dir = os.path.join(parent, f"{base_name}_variant_01_half")
+    _write_named_scene(out_dir, half_scene, base_assets)
+    created["variant_01_half"] = out_dir
+
+    # variant_02_biggest-only
+    biggest_scene = build_biggest_only_scene(real_objects)
+    out_dir = os.path.join(parent, f"{base_name}_variant_02_biggest-only")
+    _write_named_scene(out_dir, biggest_scene, base_assets)
+    created["variant_02_biggest-only"] = out_dir
+
+    # variant_03_scrambled
+    scramble_scene = scramble_positions(real_objects, room_dims, seed)
+    out_dir = os.path.join(parent, f"{base_name}_variant_03_scrambled")
+    _write_named_scene(out_dir, scramble_scene, base_assets)
+    created["variant_03_scrambled"] = out_dir
+
+    # variant_04_worst-object (own Assets dir; re-retrieves worst-match assets)
+    out_dir = os.path.join(parent, f"{base_name}_variant_04_worst-object")
+    variant_assets = os.path.join(out_dir, "Assets")
+    worst_scene, intent = build_worst_object_scene(
+        real_objects, scene_dir, variant_assets, rank=worst_rank
+    )
+    _write_named_scene(out_dir, worst_scene, variant_assets, intent=intent)
+    created["variant_04_worst-object"] = out_dir
 
     return created
 
