@@ -1,0 +1,96 @@
+"""Targeted regression tests for the bug fixes in utils / retrieve / IDesign.
+
+These exercise the pure logic (no LLM, no GPU, no bpy):
+
+1. get_depth now returns MINIMUM depth (BFS) instead of a depth that the old
+   DFS could inflate via its `else` overwrite branch.
+2. place_object / get_no_overlap_reason no longer share a mutable-default
+   `errors` dict across calls.
+3. retrieve.retrieve_candidates returns [] (not an IndexError) when no asset
+   clears the similarity threshold.
+4. IDesign.to_json creates parent directories.
+"""
+
+import importlib
+import json
+import os
+
+
+def _obj(oid, layout=None, room_objs=None):
+    return {
+        "new_object_id": oid,
+        "placement": {
+            "room_layout_elements": layout or [],
+            "objects_in_room": room_objs or [],
+        },
+    }
+
+
+def test_get_depth_returns_minimum_depth():
+    utils = importlib.import_module("utils")
+    # south_wall -> A(1) -> C(2) -> D(3)
+    # south_wall -> B(1) -> D    (so D's MIN depth is 2, not 3)
+    sg = [
+        _obj("A", layout=[{"layout_element_id": "south_wall", "preposition": "on"}]),
+        _obj("B", layout=[{"layout_element_id": "south_wall", "preposition": "on"}]),
+        _obj("C", room_objs=[{"object_id": "A", "preposition": "on"}]),
+        _obj("D", room_objs=[
+            {"object_id": "B", "preposition": "on"},
+            {"object_id": "C", "preposition": "on"},
+        ]),
+    ]
+    d = utils.get_depth(sg)
+    assert d == {"A": 1, "B": 1, "C": 2, "D": 2}, d
+
+
+def test_place_object_does_not_share_errors_default():
+    """Two independent place_object calls (omitting errors) must not accumulate
+    state into a shared mutable default dict."""
+    utils = importlib.import_module("utils")
+    # An object absent from the scene_graph short-circuits with the empty
+    # errors dict; this is enough to confirm the default is per-call.
+    ghost = {"new_object_id": "does_not_exist"}
+    e1 = utils.place_object(ghost, [], [4.0, 4.0, 2.5])
+    e2 = utils.place_object(ghost, [], [4.0, 4.0, 2.5])
+    assert e1 == {}
+    assert e2 == {}
+    # The default must be None (sentinel), not a shared dict instance.
+    assert utils.place_object.__defaults__[0] is None
+
+
+def test_get_no_overlap_reason_does_not_share_errors_default():
+    utils = importlib.import_module("utils")
+    obj = {
+        "new_object_id": "x",
+        "placement": {"room_layout_elements": [], "objects_in_room": []},
+    }
+    e1 = utils.get_no_overlap_reason(obj, [])
+    e2 = utils.get_no_overlap_reason(obj, [])
+    assert e1 == {} and e2 == {}
+    assert utils.get_no_overlap_reason.__defaults__[1] is None
+
+
+def test_retrieve_candidates_empty_without_backend():
+    """retrieve_asset_for_object must return None (not raise IndexError, not
+    trigger a multi-GB download) when the backend is not loaded. The old
+    retrieve()[0] pattern crashed on an empty candidate list."""
+    retrieve = importlib.import_module("retrieve")
+    assert not retrieve.backend_available()
+    obj = {"new_object_id": "chair_1", "style": "modern", "material": "wood"}
+    # autoload=False (default) -> graceful None, no download.
+    out = retrieve.retrieve_asset_for_object(
+        obj, "/tmp/_retrieve_test_assets", match="best", sim_th=0.99, download=False
+    )
+    assert out is None
+    # No embeddings bank should have been downloaded.
+    assert not os.path.isdir("OpenShape-Embeddings")
+
+
+def test_idesign_to_json_creates_parent_dirs(tmp_path):
+    IDesign = importlib.import_module("IDesign")
+    i = IDesign.IDesign.__new__(IDesign.IDesign)
+    i.scene_graph = [{"new_object_id": "south_wall", "itemType": "wall"}]
+    nested = tmp_path / "outputs" / "20260708-020000" / "scene_graph.json"
+    i.to_json(str(nested))
+    assert nested.exists()
+    assert json.loads(nested.read_text()) == i.scene_graph

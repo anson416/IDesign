@@ -133,7 +133,8 @@ def _retrieve_base_assets(out_dir, scene_graph):
 
     assets_dir = os.path.join(out_dir, "Assets")
     result = retrieve.retrieve_scene_assets(
-        scene_graph, assets_dir, match="best", sim_th=0.1, verbose=True
+        scene_graph, assets_dir, match="best", sim_th=0.1, verbose=True,
+        autoload=False,  # backend already loaded by _maybe_load_retrieval_backend
     )
     print(f"[cli] base assets: placed={len(result['placed'])} "
           f"skipped={len(result['skipped'])}")

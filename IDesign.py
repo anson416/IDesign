@@ -1,5 +1,6 @@
 from autogen import GroupChatManager
 import json
+import os
 import re
 import networkx as nx
 
@@ -431,6 +432,9 @@ class IDesign:
                 print("FALLBACK_POS:", _item.get("new_object_id"))
     
     def to_json(self, filename="scene_graph.json"):
-        # Save the scene graph to a json file
+        # Save the scene graph to a json file (creating parent dirs as needed
+        # so a nested output path like outputs/<run>/scene_graph.json works).
+        parent = os.path.dirname(os.path.abspath(filename))
+        os.makedirs(parent, exist_ok=True)
         with open(filename, "w") as file:
             json.dump(self.scene_graph, file, indent=4)

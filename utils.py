@@ -893,26 +893,30 @@ def get_depth(scene_graph):
                 G.add_node(constraint["object_id"])
             G.add_edge(constraint["object_id"], obj["new_object_id"])
 
-    # DFS Algo
+    # BFS from all room-prior roots, recording the MINIMUM depth (shortest
+    # path from any root) per node. The previous DFS implementation could
+    # OVERWRITE a node's depth with a larger value when revisited via a longer
+    # path (its `else` branch ran whenever the recorded depth was >= depth+1),
+    # which is incorrect: depth must be the minimum distance from a root, and
+    # a larger value can stall the backtracking solver by mis-ordering nodes.
+    from collections import deque
+
     visited = set()
     prior_ids = ["south_wall", "north_wall", "east_wall", "west_wall", "middle of the room", "ceiling"]
     start_nodes = [node for node in G.nodes() if node in prior_ids]
     all_nodes_depth = {}
 
-    def dfs(node, depth):
-        visited.add(node)
-        all_nodes_depth[node] = depth
+    queue = deque((n, 0) for n in start_nodes)
+    for n in start_nodes:
+        visited.add(n)
+        all_nodes_depth[n] = 0
+    while queue:
+        node, depth = queue.popleft()
         for successor in G.successors(node):
-            if successor not in visited:
-                dfs(successor, depth + 1)
-            elif successor in all_nodes_depth and all_nodes_depth[successor] < depth + 1:
-                # Skip already visited nodes with smaller depth to break out of cycles
-                continue
-            else:
-                all_nodes_depth[successor] = depth + 1
-
-    for start_node in start_nodes:
-        dfs(start_node, 0)
+            new_depth = depth + 1
+            if successor not in all_nodes_depth or new_depth < all_nodes_depth[successor]:
+                all_nodes_depth[successor] = new_depth
+                queue.append((successor, new_depth))
 
     all_nodes_depth = {k: v for k, v in all_nodes_depth.items() if k not in prior_ids}
     return all_nodes_depth
@@ -969,7 +973,9 @@ def get_topological_ordering(scene_graph):
     # Topological ordering
     return list(nx.topological_sort(G))
 
-def get_no_overlap_reason(obj, positions, cluster_constraint=None, errors={}):
+def get_no_overlap_reason(obj, positions, cluster_constraint=None, errors=None):
+    if errors is None:
+        errors = {}
     overlaps = []
     candidate_positions = positions
     scene_graph_edges = obj["placement"]["room_layout_elements"] + obj["placement"]["objects_in_room"]
@@ -1001,7 +1007,20 @@ def get_no_overlap_reason(obj, positions, cluster_constraint=None, errors={}):
             errors[key] = 1 + errors.get(key, 0)
     return errors
 
-def place_object(obj, scene_graph, room_dimensions, errors={}, verbose=False):
+def place_object(obj, scene_graph, room_dimensions, errors=None, verbose=False, _depth=0):
+    # `errors` is a mutable dict threaded through the call; default to a fresh
+    # one per invocation (the previous `errors={}` default was shared across
+    # ALL calls that omitted it -- a classic Python mutable-default bug that
+    # could accumulate state from unrelated placements).
+    if errors is None:
+        errors = {}
+    # Guard against deep parent->child chains (the placement graph should be
+    # acyclic after correct_design, but a malformed graph could otherwise
+    # recurse unboundedly here; the outer backtrack loop has its own cap).
+    if _depth > 64:
+        key = ("recursion_too_deep", obj.get("new_object_id", "?"))
+        errors[key] = 1 + errors.get(key, 0)
+        return errors
     if verbose:
         get_visualization(scene_graph)
     if not any(d.get("new_object_id") == obj["new_object_id"] for d in scene_graph):
@@ -1116,7 +1135,7 @@ def place_object(obj, scene_graph, room_dimensions, errors={}, verbose=False):
         for child in children:
             if verbose:
                 print(obj["new_object_id"], " placing child: ", child["new_object_id"])
-            errors_child = place_object(child, scene_graph, room_dimensions, errors={})
+            errors_child = place_object(child, scene_graph, room_dimensions, errors={}, verbose=verbose, _depth=_depth + 1)
             if verbose:
                 print("Errors child: ", errors_child)
             if errors_child:

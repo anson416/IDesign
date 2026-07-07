@@ -257,12 +257,19 @@ def retrieve_asset_for_object(
     match: str = "best",
     sim_th: float = 0.1,
     download: bool = True,
+    autoload: bool = False,
 ) -> Optional[str]:
     """Retrieve and (optionally) download a .glb asset for one object.
 
     match: "best" (highest CLIP sim) or "worst" (lowest CLIP sim passing the
     filter). Returns the objaverse uid on success, else None. The .glb is
     written to `<assets_dir>/<new_object_id>.glb` when download=True.
+
+    autoload: if False (default) the function returns None when the retrieval
+    backend is NOT already loaded, rather than implicitly triggering a ~3GB
+    CLIP+embedding download. Callers that want retrieval must call
+    load_backend() first (the scene CLI does this explicitly). Set autoload=True
+    to load-on-demand (e.g. for the standalone `python retrieve.py` script).
     """
     if match not in ("best", "worst"):
         raise ValueError(f"Unknown match mode: {match!r}")
@@ -270,6 +277,10 @@ def retrieve_asset_for_object(
     if text is None:
         return None
     obj_id = obj["new_object_id"]
+
+    if not autoload and not backend_available():
+        # Graceful no-op: do not implicitly download the embedding bank.
+        return None
 
     try:
         candidates = retrieve_candidates(
@@ -341,11 +352,17 @@ def retrieve_scene_assets(
     match: str = "best",
     sim_th: float = 0.1,
     verbose: bool = False,
+    autoload: bool = True,
 ) -> dict:
     """Retrieve an asset for every real object in a scene_graph.
 
     scene_graph may be either the flat list (after backtrack()) or the dict
     {"objects_in_room": [...]} form (after create_initial_design).
+
+    autoload: passed through to retrieve_asset_for_object. Defaults to True so
+    the standalone `python retrieve.py` script (which calls this) loads the
+    backend on demand. The scene CLI loads the backend explicitly first, then
+    passes autoload=False to avoid a redundant reload.
 
     Returns {"placed": [...], "skipped": [...], "uids": {id: uid}}.
     """
@@ -359,7 +376,7 @@ def retrieve_scene_assets(
         if not isinstance(obj, dict) or not is_real_object(obj):
             continue
         uid = retrieve_asset_for_object(
-            obj, assets_dir, match=match, sim_th=sim_th
+            obj, assets_dir, match=match, sim_th=sim_th, autoload=autoload
         )
         if uid is not None:
             placed.append(obj["new_object_id"])
