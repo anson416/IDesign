@@ -9,6 +9,45 @@ worst-match asset substitution).
 Nothing here imports an external `vlmunr` package; the renderer (`vlmunr_bpa.py`)
 and HDRI maps are copied in.
 
+## Scene generation CLI (`scene_cli.py`)
+
+Generate a scene from a textual description, optionally retrieving 3D assets
+and writing the four content variants — all without editing `test.py`.
+
+```bash
+python scene_cli.py \
+  --prompt "A creative vibrant living room" \
+  --model gpt-5.1-2025-11-13 \
+  --base-url https://api.chatanywhere.tech/v1 \
+  --api-key "$OPENAI_API_KEY" \
+  --temperature 0.7 \
+  --no-of-objects 15 \
+  --room-dims 4.0 4.0 2.5 \
+  --variants              # also write the 4 content variants (cheap forks)
+  --retrieve              # download best-match (base) + worst-match (variant_04) assets
+```
+
+Each run creates `outputs/<YYYYMMDD-HHMMSS-UTC>/` with:
+
+- `config.json` — prompt + LLM config (model/base_url/temperature; API key masked) + run metadata
+- `scene_graph.json` — the **base** scene (flat list: real objects + room priors)
+- `Assets/` — best-match `.glb` per object (only with `--retrieve`)
+- With `--variants` (siblings of the run dir):
+  - `<run>_variant_01_half/scene_graph.json` — keep `round(n/2)` real objects (seeded)
+  - `<run>_variant_02_biggest-only/scene_graph.json` — keep the single largest object (by volume)
+  - `<run>_variant_03_scrambled/scene_graph.json` — randomize every object's x/y within the room (rotation preserved)
+  - `<run>_variant_04_worst-object/` — fork the scene + re-retrieve the **worst-CLIP** asset per object into its own `Assets/`
+
+Variants are cheap transforms / asset swaps of the already-generated base
+scene; **no LLM regeneration** (no extra cost). `--retrieve` loads the
+OpenShape/CLIP backend (~3GB embeddings + CLIP weights, needs network/GPU);
+on CPU-only hosts it degrades gracefully (variant_04 copies the base asset).
+
+The LLM config (model/base_url/api_key/temperature/json_model) is threaded
+through every agent (designer, architect, engineer, corrector, refiner) via
+`agents.LLMConfig` + `build_configs()`; previously model/temperature were
+hardcoded.
+
 ## Files added
 
 | File | Purpose |
