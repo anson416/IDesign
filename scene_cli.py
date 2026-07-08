@@ -98,6 +98,8 @@ def _write_config(out_dir, args, run_id, n_real, retrieval_used):
         "seed": args.seed,
         "variants": args.variants,
         "retrieve_assets": args.retrieve,
+        "render": getattr(args, "render", False),
+        "render_all": getattr(args, "render_all", False),
         "n_real_objects": n_real,
         "llm": {
             "model": args.model,
@@ -175,13 +177,90 @@ def _make_variants(run_dir, base_dir, args, room_dims):
         print(f"[cli] variant {name}: {path}")
 
 
+def _render_configs_for(mode: str):
+    """Return the list of render configs for `--render` (single) or
+    `--render-all` (the 6 sweeps). Returns None for an unknown mode."""
+    import vlmunr_config as cfg
+
+    if mode == "render":
+        return cfg.single_render_config()
+    if mode == "render_all":
+        return cfg.all_render_configs()
+    return None
+
+
+def _scene_dirs_to_render(run_dir: str, want_variants: bool) -> list:
+    """The scene dirs to render under a run dir: always base/, plus each
+    variant_*/ dir present (only when --variants was used / they exist)."""
+    import vlmunr_config as cfg  # noqa: F401  (kept for NAMED_VARIANTS parity)
+
+    dirs = []
+    base_dir = os.path.join(run_dir, "base")
+    if os.path.isdir(base_dir):
+        dirs.append(base_dir)
+    if want_variants:
+        import vlmunr_variants as variants
+
+        for name in variants.NAMED_VARIANTS:
+            vdir = os.path.join(run_dir, name)
+            if os.path.isdir(vdir):
+                dirs.append(vdir)
+    return dirs
+
+
+def _render_run(run_dir: str, room_dims: list, mode: str, want_variants: bool) -> None:
+    """Render base (+ variants if present) of a run dir with the given mode."""
+    import vlmunr_render as vrender
+
+    configs = _render_configs_for(mode)
+    if not configs:
+        print(f"[cli] unknown render mode: {mode}", file=sys.stderr)
+        return
+    scene_dirs = _scene_dirs_to_render(run_dir, want_variants)
+    for sd in scene_dirs:
+        # Warn if a scene has no Assets (nothing to show but the shell).
+        assets = os.path.join(sd, "Assets")
+        if not os.path.isdir(assets) or not any(
+            f.endswith(".glb") for f in os.listdir(assets) if os.path.isfile(os.path.join(assets, f))
+        ):
+            print(f"[cli] WARNING: no .glb assets in {sd}/Assets — rendering "
+                  "the shell only (did you forget --retrieve?).", file=sys.stderr)
+        print(f"[cli] rendering {sd} ({mode}, {len(configs)} configs)...")
+        written = vrender.render_scene(sd, configs, list(room_dims))
+        print(f"[cli]   wrote {len(written)} PNG(s) to {sd}/renderings")
+
+
+def _room_dims_from_config(run_dir: str) -> list:
+    """Read room_dimensions from <run>/config.json (path mode), falling back to
+    the I-Design default if absent."""
+    import vlmunr_config as cfg
+
+    cfg_path = os.path.join(run_dir, "config.json")
+    try:
+        with open(cfg_path) as f:
+            c = json.load(f)
+        rd = c.get("room_dimensions")
+        if isinstance(rd, list) and len(rd) == 3:
+            return [float(v) for v in rd]
+    except Exception:
+        pass
+    return [4.0, 4.0, 2.5]
+
+
 def main(argv: Optional[list] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Generate an I-Design scene from a textual description."
+        description="Generate and/or render an I-Design scene."
     )
-    parser.add_argument(
-        "--prompt", required=True,
-        help="Free-text scene/room description (e.g. 'A cozy reading nook').",
+    # --prompt and --path are mutually exclusive; exactly one is required.
+    src = parser.add_mutually_exclusive_group(required=True)
+    src.add_argument(
+        "--prompt", default=None,
+        help="Free-text scene/room description (generates a new scene).",
+    )
+    src.add_argument(
+        "--path", default=None,
+        help="An existing run dir (outputs/<datetime>/) to render without "
+             "generating. Must be combined with --render or --render-all.",
     )
     parser.add_argument("--model", default="gpt-5.1-2025-11-13",
                         help="LLM model name for the chat agents.")
@@ -225,12 +304,50 @@ def main(argv: Optional[list] = None) -> int:
                         help="HuggingFace access token for the (gated) OpenShape "
                              "embedding repo. Falls back to the HF_TOKEN env var "
                              "or a cached `huggingface-cli login`.")
+    # --render and --render-all are mutually exclusive (never both).
+    rgrp = parser.add_mutually_exclusive_group()
+    rgrp.add_argument("--render", action="store_true",
+                      help="Render the scene(s) at the single baseline config "
+                           "(512, white, city, 50mm, pitch 0, yaw 0).")
+    rgrp.add_argument("--render-all", action="store_true",
+                      help="Render the scene(s) across the 6 factor sweeps "
+                           "(resolution, focal, pitch, yaw@45, env, background).")
     parser.add_argument("--verbose", action="store_true",
                         help="Verbose pipeline output (conflicts, depths).")
     parser.add_argument("--outputs-root", default="outputs",
                         help="Root directory for run folders.")
     args = parser.parse_args(argv)
 
+    # Resolve the render mode (None / 'render' / 'render_all').
+    if args.render and args.render_all:
+        # Mutually-exclusive group already prevents this, but guard anyway.
+        parser.error("--render and --render-all are mutually exclusive.")
+    render_mode = "render" if args.render else ("render_all" if args.render_all else None)
+
+    # ---- Path mode: no generation, render an existing run. ----
+    if args.path:
+        if not render_mode:
+            parser.error("--path requires --render or --render-all.")
+        run_dir = os.path.abspath(args.path)
+        if not os.path.isdir(run_dir):
+            parser.error(f"--path is not a directory: {run_dir}")
+        if not os.path.isfile(os.path.join(run_dir, "config.json")):
+            parser.error(
+                f"--path must be a run dir containing config.json: {run_dir}"
+            )
+        room_dims = _room_dims_from_config(run_dir)
+        # Render base + any variant_* dirs present.
+        want_variants = any(
+            os.path.isdir(os.path.join(run_dir, v))
+            for v in ("variant_01_half", "variant_02_biggest-only",
+                      "variant_03_scrambled", "variant_04_worst-object")
+        )
+        print(f"[cli] rendering existing run: {run_dir}")
+        _render_run(run_dir, room_dims, render_mode, want_variants)
+        print(f"[cli] done (render-only).")
+        return 0
+
+    # ---- Prompt mode: generate, optionally render. ----
     if not args.api_key:
         print("[cli] WARNING: no API key set (use --api-key or OPENAI_API_KEY).",
               file=sys.stderr)
@@ -267,12 +384,18 @@ def main(argv: Optional[list] = None) -> int:
     _write_config(out_dir, args, run_id, n_real, retrieval_used)
 
     # 4. Optionally produce the four content variants (no regeneration).
+    made_variants = False
     if args.variants:
         if n_real == 0:
             print("[cli] no real objects to variant; skipping --variants.",
                   file=sys.stderr)
         else:
             _make_variants(out_dir, base_dir, args, list(args.room_dims))
+            made_variants = True
+
+    # 5. Optionally render base (+ variants).
+    if render_mode:
+        _render_run(out_dir, list(args.room_dims), render_mode, made_variants)
 
     print(f"[cli] done. run_id={run_id} real_objects={n_real}")
     return 0
