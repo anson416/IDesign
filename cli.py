@@ -13,7 +13,12 @@ convenient name and a thorough setup guide.
 EXTERNAL LOCAL RESOURCES THIS METHOD REQUIRES
 ==============================================================================
 
-The method has TWO stages with very different resource needs:
+  ENVIRONMENT (Python 3.13 required — bpy 5.1.2 is cp313-only; the `idesign`
+  conda env is py3.13 and holds bpy + AG2 + the retrieval deps together).
+  Dependency specs live in `pyproject.toml`. From a fresh py3.13 env:
+
+      pip install -e ".[all]"      # generate + retrieve + render + viz + test
+      # or pick extras: [render] [retrieve] [viz] [dev]
 
   STAGE A — Scene-graph generation (the LLM pipeline)
     Needs ONLY an OpenAI-compatible chat API. No databases, no GPU, no

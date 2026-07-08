@@ -1,0 +1,82 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idesign"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+description = "I-Design: multi-agent LLM scene generation + VLM-audit rendering harness"
+readme = "README.md"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics :: 3D Modeling",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# Core dependencies the CLI needs just to run the multi-agent scene-graph
+# generation pipeline (Stage A: LLM only, no GPU/downloads). ag2 is the
+# maintained py3.13-compatible continuation of autogen that preserves the
+# 0.2-era `import autogen` API (GroupChatManager / select_speaker / dict
+# llm_config) used throughout agents.py / chats.py / corrector_agents.py /
+# refiner_agents.py / IDesign.py -- so the legacy pipeline code is unchanged.
+dependencies = [
+    "ag2",
+    "openai",
+    "networkx",
+    "jsonschema",
+    "python-dotenv",
+    "tiktoken",
+    "diskcache",
+]
+
+[project.optional-dependencies]
+# Stage B: 3D-asset retrieval (OpenShape + CLIP + Objaverse). Heavy; needs
+# network + (optionally) GPU. The CLI loads it only with --retrieve and
+# degrades gracefully when unavailable.
+retrieve = [
+    "torch",
+    "transformers",
+    "objaverse",
+    "huggingface_hub",
+    "einops",
+    "numpy",
+    "pandas",
+    "trimesh",
+    "opencv-python",
+]
+# Rendering: Blender 5.1.2 as a Python module (cp313-only -> requires Python
+# 3.13). Pulled in by --render / --render-all. Pillow composites the bg color
+# over the transparent master.
+render = [
+    "bpy==5.1.2",
+    "pillow",
+]
+# Plotting/visualization helpers used by utils.get_visualization.
+viz = [
+    "matplotlib",
+    "scipy",
+]
+# Test suite.
+dev = [
+    "pytest",
+]
+# Convenience: everything needed for the full pipeline (generate + retrieve +
+# render + viz + test).
+all = [
+    "idesign[retrieve,render,viz,dev]",
+]
+
+[project.scripts]
+idesign = "scene_cli:main"
+
+[tool.setuptools]
+py-modules = [
+    "IDesign", "agents", "chats", "corrector_agents", "refiner_agents",
+    "schemas", "utils", "retrieve", "constraint_functions",
+    "scene_cli", "cli",
+    "vlmunr_bpa", "vlmunr_config", "vlmunr_render", "vlmunr_shell",
+    "vlmunr_variants", "vlmunr_smoke", "vlmunr_retrieval_hook",
+]

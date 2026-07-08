@@ -1,9 +1,11 @@
-pyautogen==0.2.35
-networkx==2.6.3
-jsonschema==4.3.2
-matplotlib
-opencv-python==4.8.1.78
-pydantic==1.10.2
-torch_redstone
-einops
-huggingface_hub
+# Dependency specs live in pyproject.toml. Install one of:
+#
+#   pip install -e .                      # core: LLM scene-graph generation only
+#   pip install -e ".[render]"            # + --render / --render-all (Blender bpy 5.1.2)
+#   pip install -e ".[retrieve]"          # + --retrieve (OpenShape/CLIP/Objaverse assets)
+#   pip install -e ".[viz]"               # + utils.get_visualization (matplotlib/scipy)
+#   pip install -e ".[dev]"               # + pytest
+#   pip install -e ".[all]"               # everything
+#
+# Requires Python 3.13 (bpy 5.1.2 is cp313-only; ag2 provides the `autogen`
+# namespace on py3.13). See pyproject.toml for the full spec.
