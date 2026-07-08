@@ -1,17 +1,25 @@
-"""Headless Blender renderer for the VLM-unreliability audit.
+"""Headless Blender renderer for the rendering audit harness.
 
 Loads an I-Design scene (scene_graph.json + Assets/<id>.glb), builds it in
 Blender via the tested `vlmunr_bpa` renderer using the EXACT I-Design object
-transform, then sweeps audit factors and writes PNGs to
-`<scene-dir>/renderings/`.
+transform, adds a dollhouse floor+walls shell derived from the room dimensions,
+then renders the requested configs and writes PNGs to
+`<scene-dir>/renderings/` (the folder is ALWAYS named "renderings").
 
 Two-phase rendering per (res, focal, pitch, yaw, hdri):
-  1. Render a transparent master `render_{res}_{focal}_{pitch}_{yaw}_{hdri}.png`.
-  2. Composite each background gray onto the master via
-     `Renderer.add_bg_to_rgba` -> `render_{res}_{focal}_{r}_{g}_{b}_{pitch}_{yaw}_{hdri}.png`.
+  1. Transparent master (env-map lighting, transparent film):
+     render_res-{res}_focal-{focal}_pitch-{pitch}_yaw-{yaw}_env-{hdri}.png
+  2. Background composited (one per bg color) via PIL alpha-composite over the
+     master (bpa.Renderer.add_bg_to_rgba):
+     render_res-{res}_focal-{focal}_pitch-{pitch}_yaw-{yaw}_env-{hdri}_bg-{r}-{g}-{b}.png
 
-The filename builders and scene-graph object iteration are pure functions so
-they can be unit-tested without bpy.
+The camera uses the tight-fit method (fit_ratio=1.0) so the scene+shell fill the
+viewport with no padding. Near walls are back-face culled per camera (dollhouse
+convention) so oblique views always see into the room; at top-down (pitch 0) all
+walls are edge-on and shown.
+
+The filename builders, scene-graph object iteration, and the object transform
+are pure functions so they can be unit-tested without bpy.
 """
 
 import argparse
@@ -38,81 +46,6 @@ ROOM_PRIOR_IDS = frozenset(
 )
 
 
-_VLMUNR_WALLS = []
-
-
-def _build_idesign_shell(scene_dir):
-    """Build floor+walls from the I-Design scene_graph shell entries.
-
-    Shell entries: itemType 'floor'|'wall', Z-up meters, position=box center,
-    size_in_meters={length,width,height}. We derive the floor polygon from the
-    floor entry's footprint (a rectangle centered at its position) and build a
-    dollhouse shell. Returns the list of wall objects (tagged) for culling.
-    """
-    import json as _json, os as _os
-    try:
-        import bpy  # noqa
-        import vlmunr_shell as _vs
-    except Exception as _e:
-        return []
-    def _load_shell(sg):
-        _floor = None
-        _wh = 2.5
-        for it in sg:
-            if not isinstance(it, dict):
-                continue
-            t = it.get("itemType")
-            if t == "floor":
-                _floor = it
-            elif t == "wall":
-                h = (it.get("size_in_meters") or {}).get("height")
-                if h:
-                    _wh = float(h)
-        return _floor, _wh
-    sg_path = _os.path.join(scene_dir, "scene_graph.json")
-    try:
-        sg = _json.load(open(sg_path))
-    except Exception:
-        return []
-    floor, wh = _load_shell(sg)
-    if floor is None:
-        # Variant scene_graphs (removal/scramble/subst) drop the floor/wall/
-        # ceiling shell entries, so fall back to the BASE scene's scene_graph.
-        import re as _re
-        _sd = _os.path.abspath(scene_dir.rstrip("/"))
-        _parent = _os.path.dirname(_sd)
-        _name = _os.path.basename(_sd)
-        _candidates = []
-        # full-run layout: "<label>_variant_<v>" -> base "<label>"
-        _m = _re.match(r"^(.*)_variant_.+$", _name)
-        if _m:
-            _candidates.append(_os.path.join(_parent, _m.group(1), "scene_graph.json"))
-        # old smoke layout: sibling "scene/"
-        _candidates.append(_os.path.join(_parent, "scene", "scene_graph.json"))
-        for _base in _candidates:
-            if _os.path.isfile(_base):
-                try:
-                    floor, wh = _load_shell(_json.load(open(_base)))
-                    if floor is not None:
-                        break
-                except Exception:
-                    pass
-    if floor is None:
-        return []
-    pos = floor.get("position", {})
-    sz = floor.get("size_in_meters", {})
-    cx, cy = float(pos.get("x", 0.0)), float(pos.get("y", 0.0))
-    L = float(sz.get("length", 4.0)); W = float(sz.get("width", 4.0))
-    hx, hy = L / 2.0, W / 2.0
-    verts = [(cx - hx, cy - hy), (cx + hx, cy - hy),
-             (cx + hx, cy + hy), (cx - hx, cy + hy)]
-    try:
-        return _vs.build_room_shell(bpy, verts, wh, margin=0.0, ceiling=False)
-    except Exception as _e:
-        print("VLMUNR shell build failed:", _e)
-        return []
-
-
 def is_real_object(item: dict) -> bool:
     if "itemType" in item:
         return False
@@ -132,15 +65,23 @@ def iter_real_objects(scene_graph: list):
 
 def master_filename(res: int, focal: int, pitch: int, yaw: int, hdri: str) -> str:
     """Filename of the transparent master render for a config."""
-    return f"render_{res}_{focal}_{pitch}_{yaw}_{hdri}.png"
+    return (
+        f"render_res-{res}_focal-{focal}_pitch-{pitch}_yaw-{yaw}_env-{hdri}.png"
+    )
 
 
 def composite_filename(
     res: int, focal: int, bg: tuple, pitch: int, yaw: int, hdri: str
 ) -> str:
-    """Filename of a background-composited render for a config."""
+    """Filename of a background-composited render for a config.
+
+    Appends ``_bg-{r}-{g}-{b}`` to the master stem.
+    """
     r, g, b = bg
-    return f"render_{res}_{focal}_{r}_{g}_{b}_{pitch}_{yaw}_{hdri}.png"
+    return (
+        f"render_res-{res}_focal-{focal}_pitch-{pitch}_yaw-{yaw}_env-{hdri}"
+        f"_bg-{r}-{g}-{b}.png"
+    )
 
 
 def idesign_object_transform(item: dict) -> dict:
@@ -174,6 +115,29 @@ def idesign_object_transform(item: dict) -> dict:
 # ----------------------------------------------------------------------------
 # Blender scene building (requires bpy via vlmunr_bpa).
 # ----------------------------------------------------------------------------
+
+
+def build_box_shell(room_dims: list):
+    """Build a dollhouse floor + 4 walls from room_dims = [L, W, H] (meters).
+
+    I-Design convention: the room box spans x in [0, L], y in [0, W], floor at
+    z=0, walls up to H (matches place_in_blender.create_room). Walls are tagged
+    for back-face culling via vlmunr_shell. Returns the list of wall objects
+    (empty if bpy / vlmunr_shell is unavailable, e.g. when imported without a
+    Blender runtime).
+    """
+    try:
+        import bpy  # noqa: F401
+        import vlmunr_shell as _vs
+    except Exception:
+        return []
+    length, width, height = float(room_dims[0]), float(room_dims[1]), float(room_dims[2])
+    verts = [(0.0, 0.0), (length, 0.0), (length, width), (0.0, width)]
+    try:
+        return _vs.build_room_shell(bpy, verts, height, margin=0.0, ceiling=False)
+    except Exception as e:  # pragma: no cover - bpy runtime only
+        print(f"[render] shell build failed: {e}")
+        return []
 
 
 def _resolve_assets_dir(scene_dir: str, assets_dir: Optional[str]) -> str:
@@ -284,57 +248,47 @@ def _apply_idesign_transform(bpa, obj, item: dict) -> None:
 # ----------------------------------------------------------------------------
 
 
-def render_phases(
+def render_scene(
     scene_dir: str,
-    phases: list,
+    configs: list,
+    room_dims: list,
     assets_dir: Optional[str] = None,
 ) -> list:
-    """Build the scene and render all configs for the given phases.
+    """Build the scene + dollhouse shell and render the given configs.
+
+    Two-phase per (res, focal, pitch, yaw, hdri): a transparent master, then one
+    PIL-composited PNG per background color in the config set. Output goes to
+    ``<scene_dir>/renderings/`` (always named "renderings"). Uses tight-fit
+    cameras (fit_ratio=1.0). Near walls are culled per camera.
 
     Returns the list of output PNG paths written.
     """
     import vlmunr_bpa as bpa  # lazy: needs bpy
+    import vlmunr_shell as _vs
 
     out_root = os.path.join(scene_dir, "renderings")
     os.makedirs(out_root, exist_ok=True)
 
-    # Build the scene once.
+    # Build the scene once: objects first, then the architectural shell.
     bpa.clear()
     n = load_scene_into_blender(scene_dir, assets_dir=assets_dir)
-    # VLMUNR_PATCH room shell
-    global _VLMUNR_WALLS
-    _VLMUNR_WALLS = _build_idesign_shell(scene_dir)
-    if n == 0:
-        raise RuntimeError(f"No objects placed from {scene_dir!r}")
+    walls = build_box_shell(room_dims)
+    if n == 0 and not walls:
+        raise RuntimeError(
+            f"No objects placed and no shell built from {scene_dir!r}"
+        )
 
     renderer = bpa.Renderer()
-
-    # Collect unique configs across phases (dedup identical baseline points).
-    configs = []
-    seen = set()
-    for phase in phases:
-        for c in cfg.phase_levels(phase):
-            key = (
-                c["res"],
-                c["focal"],
-                tuple(c["bg"]),
-                c["hdri"],
-                c["pitch"],
-                c["yaw"],
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            configs.append(c)
-
-    written = _render_configs(bpa, renderer, configs, out_root)
+    written = _render_configs(bpa, _vs, renderer, walls, configs, out_root)
     return written
 
 
-def _render_configs(bpa, renderer, configs, out_root) -> list:
-    """Render a list of configs with two-phase (master + composite) output.
+def _render_configs(bpa, _vs, renderer, walls, configs, out_root) -> list:
+    """Render configs with two-phase (master + composite) output.
 
-    Re-initializes Blender world whenever the HDRI changes.
+    Re-initializes Blender world whenever the HDRI changes. Configs sharing the
+    same (res, focal, pitch, yaw, hdri) share one transparent master and differ
+    only by background color.
     """
     written = []
     current_hdri = None
@@ -356,11 +310,8 @@ def _render_configs(bpa, renderer, configs, out_root) -> list:
         master_path = os.path.join(
             out_root, master_filename(res, focal, pitch, yaw, hdri)
         )
-        try:
-            import vlmunr_shell as _vs
-            _vs.cull_walls(globals().get('_VLMUNR_WALLS', []), pitch, yaw)
-        except Exception as _e:
-            pass
+        # Back-face cull near walls for this camera (dollhouse).
+        _vs.cull_walls(walls, pitch, yaw)
         center, radius = renderer.compute_bounding_sphere()
         renderer.render_perspective(
             master_path,
@@ -369,8 +320,8 @@ def _render_configs(bpa, renderer, configs, out_root) -> list:
             rotation=(pitch, 0, yaw),
             resolution=res,
             focal_length=focal,
-            fit_ratio=0.6,
-            background=None,
+            fit_ratio=1.0,            # tight-fit
+            background=None,          # transparent master; env-map still lights
         )
         written.append(master_path)
 
@@ -385,20 +336,58 @@ def _render_configs(bpa, renderer, configs, out_root) -> list:
     return written
 
 
+# ----------------------------------------------------------------------------
+# Standalone CLI (kept for `vlmunr_render.py --scene-dir --phase`).
+# ----------------------------------------------------------------------------
+
+
+def render_phases(
+    scene_dir: str,
+    phases: list,
+    room_dims: Optional[list] = None,
+    assets_dir: Optional[str] = None,
+) -> list:
+    """Build the scene and render all configs for the given phases.
+
+    `room_dims` defaults to the I-Design default [4.0, 4.0, 2.5].
+    Returns the list of output PNG paths written.
+    """
+    if room_dims is None:
+        room_dims = [4.0, 4.0, 2.5]
+    configs = []
+    seen = set()
+    for phase in phases:
+        for c in cfg.phase_levels(phase):
+            key = (
+                c["res"], c["focal"], tuple(c["bg"]),
+                c["hdri"], c["pitch"], c["yaw"],
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            configs.append(c)
+    return render_scene(scene_dir, configs, room_dims, assets_dir=assets_dir)
+
+
 def main(argv: Optional[list] = None) -> None:
     parser = argparse.ArgumentParser(
-        description="Render an I-Design scene across audit factors."
+        description="Render an I-Design scene across rendering factors."
     )
     parser.add_argument(
         "--scene-dir",
         required=True,
-        help="Directory containing scene_graph.json and Assets/",
+        help="Directory containing scene_graph.json and Assets/.",
     )
     parser.add_argument(
         "--assets-dir",
         default=None,
         help="Override directory for Assets/<id>.glb (defaults to scene-dir/Assets "
         "or the path recorded by vlmunr_variants).",
+    )
+    parser.add_argument(
+        "--room-dims", nargs=3, type=float, default=[4.0, 4.0, 2.5],
+        metavar=("LENGTH", "WIDTH", "HEIGHT"),
+        help="Room dimensions in meters (x, y, z) for the dollhouse shell.",
     )
     parser.add_argument(
         "--phase",
@@ -408,7 +397,10 @@ def main(argv: Optional[list] = None) -> None:
     args = parser.parse_args(argv)
 
     phases = cfg.ALL_PHASES if args.phase == "all" else [args.phase]
-    written = render_phases(args.scene_dir, phases, assets_dir=args.assets_dir)
+    written = render_phases(
+        args.scene_dir, phases, room_dims=list(args.room_dims),
+        assets_dir=args.assets_dir,
+    )
     print(f"Wrote {len(written)} PNG(s) to {os.path.join(args.scene_dir, 'renderings')}")
 
 
