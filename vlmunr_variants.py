@@ -470,6 +470,7 @@ def generate_named_variants(
     seed: int = 42,
     room_dims: Optional[list] = None,
     worst_rank: int = 0,
+    variant_prefix: Optional[str] = None,
 ) -> dict:
     """Generate the four CLI-named variants as sibling dirs of `scene_dir`.
 
@@ -483,6 +484,12 @@ def generate_named_variants(
     falling back to copying the base asset when retrieval is unavailable).
     The other three share the base scene's Assets/ via vlmunr_assets_dir.txt.
 
+    `variant_prefix` controls the directory name prefix. It defaults to
+    `<basename of scene_dir>_` (the standalone-tool layout: sibling dirs
+    named `<base>_variant_01_half`). Pass `variant_prefix=""` for the CLI
+    run layout, where variants live INSIDE the run dir and are named simply
+    `variant_01_half` etc.
+
     Returns {variant_name: variant_dir}.
     """
     if room_dims is None:
@@ -495,28 +502,30 @@ def generate_named_variants(
     parent = os.path.dirname(os.path.abspath(scene_dir.rstrip(os.sep)))
     base_name = os.path.basename(os.path.abspath(scene_dir.rstrip(os.sep)))
     base_assets = os.path.join(os.path.abspath(scene_dir), "Assets")
+    if variant_prefix is None:
+        variant_prefix = f"{base_name}_"
     created: dict[str, str] = {}
 
     # variant_01_half
     half_scene = build_removal_scene(real_objects, 2, seed)
-    out_dir = os.path.join(parent, f"{base_name}_variant_01_half")
+    out_dir = os.path.join(parent, f"{variant_prefix}variant_01_half")
     _write_named_scene(out_dir, half_scene, base_assets)
     created["variant_01_half"] = out_dir
 
     # variant_02_biggest-only
     biggest_scene = build_biggest_only_scene(real_objects)
-    out_dir = os.path.join(parent, f"{base_name}_variant_02_biggest-only")
+    out_dir = os.path.join(parent, f"{variant_prefix}variant_02_biggest-only")
     _write_named_scene(out_dir, biggest_scene, base_assets)
     created["variant_02_biggest-only"] = out_dir
 
     # variant_03_scrambled
     scramble_scene = scramble_positions(real_objects, room_dims, seed)
-    out_dir = os.path.join(parent, f"{base_name}_variant_03_scrambled")
+    out_dir = os.path.join(parent, f"{variant_prefix}variant_03_scrambled")
     _write_named_scene(out_dir, scramble_scene, base_assets)
     created["variant_03_scrambled"] = out_dir
 
     # variant_04_worst-object (own Assets dir; re-retrieves worst-match assets)
-    out_dir = os.path.join(parent, f"{base_name}_variant_04_worst-object")
+    out_dir = os.path.join(parent, f"{variant_prefix}variant_04_worst-object")
     variant_assets = os.path.join(out_dir, "Assets")
     worst_scene, intent = build_worst_object_scene(
         real_objects, scene_dir, variant_assets, rank=worst_rank

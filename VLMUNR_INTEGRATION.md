@@ -30,13 +30,14 @@ python scene_cli.py \
 Each run creates `outputs/<YYYYMMDD-HHMMSS-UTC>/` with:
 
 - `config.json` — prompt + LLM config (model/base_url/temperature; API key masked) + run metadata
-- `scene_graph.json` — the **base** scene (flat list: real objects + room priors)
-- `Assets/` — best-match `.glb` per object (only with `--retrieve`)
-- With `--variants` (siblings of the run dir):
-  - `<run>_variant_01_half/scene_graph.json` — keep `round(n/2)` real objects (seeded)
-  - `<run>_variant_02_biggest-only/scene_graph.json` — keep the single largest object (by volume)
-  - `<run>_variant_03_scrambled/scene_graph.json` — randomize every object's x/y within the room (rotation preserved)
-  - `<run>_variant_04_worst-object/` — fork the scene + re-retrieve the **worst-CLIP** asset per object into its own `Assets/`
+- `base/scene_graph.json` — the **base** scene (flat list: real objects + room priors)
+- `base/Assets/` — best-match `.glb` per object (only with `--retrieve`)
+- `base/renderings/` — render output (only if `vlmunr_render.py` is run against the base dir; the folder is ALWAYS named `renderings`)
+- With `--variants` (children of the run dir, no run-id prefix):
+  - `variant_01_half/scene_graph.json` — keep `round(n/2)` real objects (seeded)
+  - `variant_02_biggest-only/scene_graph.json` — keep the single largest object (by volume)
+  - `variant_03_scrambled/scene_graph.json` — randomize every object's x/y within the room (rotation preserved)
+  - `variant_04_worst-object/` — fork the scene + re-retrieve the **worst-CLIP** asset per object into its own `Assets/`
 
 Variants are cheap transforms / asset swaps of the already-generated base
 scene; **no LLM regeneration** (no extra cost). `--retrieve` loads the

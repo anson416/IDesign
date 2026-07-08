@@ -9,8 +9,10 @@ Layout
 outputs/
   <YYYYMMDD-HHMMSS>/            # datetime.datetime.now(datetime.UTC)
     config.json                  # prompt + llm config + run metadata
-    scene_graph.json             # BASE scene (flat list: real objects + priors)
-    Assets/                      # best-match .glb per object (if --retrieve)
+    base/
+      scene_graph.json           # BASE scene (flat list: real objects + priors)
+      Assets/                    # best-match .glb per object (if --retrieve)
+      renderings/                # (if rendered) ALWAYS named "renderings"
     variant_01_half/
       scene_graph.json           # keep round(n/2) objects
     variant_02_biggest-only/
@@ -138,11 +140,11 @@ def _maybe_load_retrieval_backend(args):
         return False
 
 
-def _retrieve_base_assets(out_dir, scene_graph):
-    """Download the best-match .glb for every real object into Assets/."""
+def _retrieve_base_assets(base_dir, scene_graph):
+    """Download the best-match .glb for every real object into base/Assets/."""
     import retrieve
 
-    assets_dir = os.path.join(out_dir, "Assets")
+    assets_dir = os.path.join(base_dir, "Assets")
     result = retrieve.retrieve_scene_assets(
         scene_graph, assets_dir, match="best", sim_th=0.1, verbose=True,
         autoload=False,  # backend already loaded by _maybe_load_retrieval_backend
@@ -152,15 +154,22 @@ def _retrieve_base_assets(out_dir, scene_graph):
     return assets_dir
 
 
-def _make_variants(out_dir, args, room_dims, scene_dir_for_variants):
-    """Generate the four named variants as sibling subfolders of out_dir."""
+def _make_variants(run_dir, base_dir, args, room_dims):
+    """Generate the four named variants as children of the run dir.
+
+    Variants fork the base scene (under base/); they share the base Assets/
+    via a recorded marker file, except variant_04 which writes its own Assets/.
+    With variant_prefix="" the dirs are named simply variant_01_half etc.
+    (no run-id prefix) so they sit directly under <run>/.
+    """
     import vlmunr_variants as variants
 
     created = variants.generate_named_variants(
-        scene_dir_for_variants,
+        base_dir,
         seed=args.seed,
         room_dims=room_dims,
         worst_rank=0,
+        variant_prefix="",
     )
     for name, path in created.items():
         print(f"[cli] variant {name}: {path}")
@@ -228,7 +237,8 @@ def main(argv: Optional[list] = None) -> int:
 
     run_id = _utc_run_id()
     out_dir = os.path.join(args.outputs_root, run_id)
-    os.makedirs(out_dir, exist_ok=True)
+    base_dir = os.path.join(out_dir, "base")
+    os.makedirs(base_dir, exist_ok=True)
     print(f"[cli] run -> {out_dir}")
 
     # 1. Generate the base scene graph (LLM + backtracking solver).
@@ -237,7 +247,7 @@ def main(argv: Optional[list] = None) -> int:
 
     # scene_graph is a flat list (real objects + room priors) after backtrack.
     scene_graph = i_design.scene_graph
-    base_scene_path = os.path.join(out_dir, "scene_graph.json")
+    base_scene_path = os.path.join(base_dir, "scene_graph.json")
     with open(base_scene_path, "w") as f:
         json.dump(scene_graph, f, indent=4)
     print(f"[cli] base scene written: {base_scene_path}")
@@ -251,7 +261,7 @@ def main(argv: Optional[list] = None) -> int:
     # 2. Optionally retrieve assets (best match) for the base scene.
     retrieval_used = _maybe_load_retrieval_backend(args)
     if retrieval_used:
-        _retrieve_base_assets(out_dir, scene_graph)
+        _retrieve_base_assets(base_dir, scene_graph)
 
     # 3. Persist config.json (prompt + llm config + metadata).
     _write_config(out_dir, args, run_id, n_real, retrieval_used)
@@ -262,7 +272,7 @@ def main(argv: Optional[list] = None) -> int:
             print("[cli] no real objects to variant; skipping --variants.",
                   file=sys.stderr)
         else:
-            _make_variants(out_dir, args, list(args.room_dims), out_dir)
+            _make_variants(out_dir, base_dir, args, list(args.room_dims))
 
     print(f"[cli] done. run_id={run_id} real_objects={n_real}")
     return 0

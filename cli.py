@@ -109,12 +109,14 @@ QUICK START
 
 Output layout (under outputs/<YYYYMMDD-HHMMSS-UTC>/):
   config.json                      prompt + llm config (api key masked) + metadata
-  scene_graph.json                 BASE scene (flat list: real objects + room priors)
-  Assets/                          best-match .glb per object (with --retrieve)
-  <run>_variant_01_half/           keep round(n/2) objects (seeded, no regen)
-  <run>_variant_02_biggest-only/   keep the single largest object (by volume)
-  <run>_variant_03_scrambled/      randomize positions within the room (no regen)
-  <run>_variant_04_worst-object/   fork + worst-CLIP asset per object (own Assets/)
+  base/
+    scene_graph.json               BASE scene (flat list: real objects + room priors)
+    Assets/                        best-match .glb per object (with --retrieve)
+    renderings/                    (if rendered) ALWAYS named "renderings"
+  variant_01_half/                 keep round(n/2) objects (seeded, no regen)
+  variant_02_biggest-only/         keep the single largest object (by volume)
+  variant_03_scrambled/            randomize positions within the room (no regen)
+  variant_04_worst-object/         fork + worst-CLIP asset per object (own Assets/)
 
 Variants are cheap JSON transforms / asset swaps of the already-generated
 base scene — they do NOT re-run the LLM (no extra cost). variant_04 reuses the
