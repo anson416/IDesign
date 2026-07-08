@@ -73,11 +73,14 @@ The resources for STAGE B (and how to prepare them if you don't have them):
        var VLMUNR_LOAD_PC_ENCODER=1 is set. You can ignore it for scene
        generation; omit that env var (the default).
 
-  6. (OPTIONAL) Blender / `bpy` — NOT required by this CLI.
-     - Needed only by vlmunr_render.py to turn a scene + Assets/ into PNGs.
-     This CLI stops at scene_graph.json + Assets/ + variants. To render, run
-     `python vlmunr_render.py --scene-dir <run-dir>` from a Blender-bundled
-     Python (bpy is not in the plain idesign env).
+  6. Blender / `bpy` 5.1.2 — required only for `--render` / `--render-all`.
+     - Installed in the `idesign` env (Python 3.13; bpy 5.1.2 is cp313-only).
+       `cli.py` imports bpy directly and renders in-process; no separate
+       Blender-bundled Python is needed. Omit the render flags if you only
+       want scene_graph.json + Assets/ + variants.
+     - The `idesign` env also uses AG2 (`ag2`, alias of the `autogen` package)
+       instead of the old pyautogen 0.2.x: AG2 supports Python 3.13 AND keeps
+       the 0.2-era `import autogen` API, so generation works unchanged.
 
   7. LLM API credentials — required for STAGE A.
      - An OpenAI-compatible endpoint. Pass --api-key, --base-url, --model,
@@ -107,12 +110,49 @@ QUICK START
       --objaverse-cache-dir ~/objaverse_cache \
       --hf-token "$HF_TOKEN"
 
+  # Generate + render the base (single baseline config) in one go:
+  python cli.py --prompt "A cozy reading nook" --api-key "$OPENAI_API_KEY" \
+      --retrieve --variants --render
+
+  # Generate + render the full 6-factor sweep (44 configs) on base + variants:
+  python cli.py --prompt "A cozy reading nook" --api-key "$OPENAI_API_KEY" \
+      --retrieve --variants --render-all
+
+  # Render an ALREADY-generated run (no generation; renders base + variant_*):
+  python cli.py --path outputs/20260708-023434 --render-all
+
+RENDERING
+---------
+Rendering uses Blender (bpy 5.1.2) in-process — the `idesign` env is Python 3.13
+and holds bpy + AG2 (autogen) + the retrieval deps together, so `cli.py` does
+generation and rendering in one process.
+
+  --render        render every scene at the SINGLE baseline config:
+                  res=512, bg=(255,255,255), env=city, focal=50mm, pitch=0, yaw=0.
+  --render-all    render every scene across the 6 factor sweeps (44 configs
+                  after dedup): resolution, focal, pitch(yaw 0), yaw(pitch 45),
+                  env map, background color.
+  (--render and --render-all are mutually exclusive.)
+
+Two-phase per (res,focal,pitch,yaw,env): a transparent master (env-map lit) is
+rendered at fit_ratio=1 (tight-fit), then each background color is PIL-composited
+over it. The architectural shell (floor + 4 walls from --room-dims) is kept and
+back-face culled (dollhouse) so oblique views see into the room. Output goes to
+<scene>/renderings/ (ALWAYS named "renderings"):
+
+  render_res-{res}_focal-{focal}_pitch-{pitch}_yaw-{yaw}_env-{env}.png
+  render_res-{res}_focal-{focal}_pitch-{pitch}_yaw-{yaw}_env-{env}_bg-{r}-{g}-{b}.png
+
+`--path` (mutually exclusive with --prompt) targets an existing run dir and
+requires --render or --render-all: it renders base + any variant_* dirs present
+without running the LLM pipeline (room_dims read from <run>/config.json).
+
 Output layout (under outputs/<YYYYMMDD-HHMMSS-UTC>/):
   config.json                      prompt + llm config (api key masked) + metadata
   base/
     scene_graph.json               BASE scene (flat list: real objects + room priors)
     Assets/                        best-match .glb per object (with --retrieve)
-    renderings/                    (if rendered) ALWAYS named "renderings"
+    renderings/                    (with --render/--render-all) ALWAYS named "renderings"
   variant_01_half/                 keep round(n/2) objects (seeded, no regen)
   variant_02_biggest-only/         keep the single largest object (by volume)
   variant_03_scrambled/            randomize positions within the room (no regen)

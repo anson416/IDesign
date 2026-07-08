@@ -57,22 +57,22 @@ def synthetic_scene(n_objects):
 def test_master_filename_exact():
     assert (
         render.master_filename(512, 50, 0, 0, "city")
-        == "render_512_50_0_0_city.png"
+        == "render_res-512_focal-50_pitch-0_yaw-0_env-city.png"
     )
     assert (
         render.master_filename(1024, 200, 90, 330, "sunset")
-        == "render_1024_200_90_330_sunset.png"
+        == "render_res-1024_focal-200_pitch-90_yaw-330_env-sunset.png"
     )
 
 
 def test_composite_filename_exact():
     assert (
         render.composite_filename(512, 50, (128, 128, 128), 0, 0, "city")
-        == "render_512_50_128_128_128_0_0_city.png"
+        == "render_res-512_focal-50_pitch-0_yaw-0_env-city_bg-128-128-128.png"
     )
     assert (
         render.composite_filename(224, 24, (0, 18, 255), 60, 120, "forest")
-        == "render_224_24_0_18_255_60_120_forest.png"
+        == "render_res-224_focal-24_pitch-60_yaw-120_env-forest_bg-0-18-255.png"
     )
 
 
@@ -209,52 +209,50 @@ def test_idesign_transform_rotation_offset():
 # ---------------------------------------------------------------------------
 
 
-def test_factor_level_counts_match_paper_table1():
+def test_factor_level_counts_match_spec():
     assert len(cfg.RESOLUTIONS) == 9
     assert len(cfg.FOCAL_LENGTHS) == 7
     assert len(cfg.PITCHES) == 7
     assert len(cfg.YAWS) == 8
-    assert len(cfg.BACKGROUND_GRAYS) == 6
-    assert len(cfg.BACKGROUND_CHROMATIC) == 3
+    assert len(cfg.BACKGROUNDS) == 10
+    assert len(cfg.HDRIS) == 8
 
 
-def test_factor_level_values_match_paper_table1():
+def test_factor_level_values_match_spec():
     assert cfg.RESOLUTIONS == [196, 224, 256, 336, 384, 448, 512, 768, 1024]
     assert cfg.FOCAL_LENGTHS == [16, 24, 35, 50, 85, 100, 200]
-    assert cfg.BACKGROUND_GRAYS == [0, 65, 128, 186, 204, 255]
-    assert cfg.BACKGROUND_CHROMATIC == [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
     assert cfg.PITCHES == [0, 15, 30, 45, 60, 75, 90]
     assert cfg.YAWS == [0, 45, 90, 135, 180, 225, 270, 315]
-    # Floor-texture background is a documented, NON-rendered sentinel.
-    assert cfg.FLOOR_TEXTURE_BACKGROUND == "floor_texture"
-    assert cfg.BASELINE_YAW_PITCH == 45
-
-
-def test_all_phases_contains_new_phases():
-    assert cfg.ALL_PHASES == [
-        "1a", "1b", "1b_chroma", "1c", "1d", "2", "2_pitch", "2_yaw"
+    assert cfg.HDRIS == [
+        "city", "courtyard", "forest", "interior",
+        "night", "studio", "sunrise", "sunset",
     ]
+    assert cfg.BACKGROUNDS == [
+        (0, 0, 0), (65, 65, 65), (118, 118, 118), (128, 128, 128),
+        (186, 186, 186), (204, 204, 204), (255, 255, 255),
+        (255, 0, 0), (0, 255, 0), (0, 0, 255),
+    ]
+    # Baseline is white; the yaw sweep runs at pitch 45 (not baseline 0).
+    assert cfg.BASELINE_BG == (255, 255, 255)
+    assert cfg.YAW_SWEEP_PITCH == 45
+
+
+def test_all_phases_is_the_six_sweeps():
+    assert cfg.ALL_PHASES == ["1a", "1d", "2_pitch", "2_yaw", "1c", "1b"]
 
 
 def test_phase_levels_counts():
     assert len(cfg.phase_levels("1a")) == len(cfg.RESOLUTIONS)
-    assert len(cfg.phase_levels("1b")) == len(cfg.BACKGROUND_GRAYS)
+    assert len(cfg.phase_levels("1b")) == len(cfg.BACKGROUNDS)
     assert len(cfg.phase_levels("1c")) == len(cfg.HDRIS)
     assert len(cfg.phase_levels("1d")) == len(cfg.FOCAL_LENGTHS)
-    assert len(cfg.phase_levels("2")) == len(cfg.PITCHES) * len(cfg.YAWS)
+    assert len(cfg.phase_levels("2_pitch")) == len(cfg.PITCHES)
+    assert len(cfg.phase_levels("2_yaw")) == len(cfg.YAWS)
 
 
-def test_phase_levels_chroma():
-    chroma = cfg.phase_levels("1b_chroma")
-    assert len(chroma) == 3
-    assert [c["bg"] for c in chroma] == cfg.BACKGROUND_CHROMATIC
-    # All other factors held at baseline.
-    for c in chroma:
-        assert c["res"] == cfg.BASELINE_RES
-        assert c["focal"] == cfg.BASELINE_FOCAL
-        assert c["hdri"] == cfg.BASELINE_HDRI
-        assert c["pitch"] == cfg.BASELINE_PITCH
-        assert c["yaw"] == cfg.BASELINE_YAW
+def test_phase_levels_unknown_raises():
+    with pytest.raises(ValueError):
+        cfg.phase_levels("9z")
 
 
 def test_phase_levels_pitch_sweep():
@@ -278,14 +276,34 @@ def test_phase_levels_hold_baseline():
         assert c["hdri"] == cfg.BASELINE_HDRI
         assert c["pitch"] == cfg.BASELINE_PITCH
         assert c["yaw"] == cfg.BASELINE_YAW
-    # 1b sweeps bg as gray triples.
-    grays = {c["bg"] for c in cfg.phase_levels("1b")}
-    assert (0, 0, 0) in grays and (255, 255, 255) in grays
+    # 1b sweeps bg over all 10 colors (incl. white + chromatic).
+    bgs = {c["bg"] for c in cfg.phase_levels("1b")}
+    assert (0, 0, 0) in bgs and (255, 255, 255) in bgs
+    assert (255, 0, 0) in bgs and (0, 255, 0) in bgs and (0, 0, 255) in bgs
 
 
-def test_phase_levels_unknown_raises():
-    with pytest.raises(ValueError):
-        cfg.phase_levels("9z")
+def test_single_render_config_is_baseline():
+    s = cfg.single_render_config()
+    assert len(s) == 1
+    assert s[0] == cfg.BASELINE_CONFIG()
+    assert s[0]["res"] == 512 and s[0]["bg"] == (255, 255, 255)
+    assert s[0]["pitch"] == 0 and s[0]["yaw"] == 0 and s[0]["hdri"] == "city"
+
+
+def test_all_render_configs_dedup():
+    allc = cfg.all_render_configs()
+    # 6 sweeps sum to 49 raw configs; the shared baseline belongs to all 6,
+    # so dedup removes 5 -> 44 unique.
+    assert len(allc) == 44
+    keys = [
+        (c["res"], c["focal"], tuple(c["bg"]), c["hdri"], c["pitch"], c["yaw"])
+        for c in allc
+    ]
+    assert len(set(keys)) == len(allc)  # no dupes
+    # baseline is present exactly once.
+    assert keys.count(
+        (512, 50, (255, 255, 255), "city", 0, 0)
+    ) == 1
 
 
 # ---------------------------------------------------------------------------

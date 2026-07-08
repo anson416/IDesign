@@ -32,12 +32,57 @@ Each run creates `outputs/<YYYYMMDD-HHMMSS-UTC>/` with:
 - `config.json` — prompt + LLM config (model/base_url/temperature; API key masked) + run metadata
 - `base/scene_graph.json` — the **base** scene (flat list: real objects + room priors)
 - `base/Assets/` — best-match `.glb` per object (only with `--retrieve`)
-- `base/renderings/` — render output (only if `vlmunr_render.py` is run against the base dir; the folder is ALWAYS named `renderings`)
+- `base/renderings/` — render output (only with `--render`/`--render-all`; the folder is ALWAYS named `renderings`)
 - With `--variants` (children of the run dir, no run-id prefix):
   - `variant_01_half/scene_graph.json` — keep `round(n/2)` real objects (seeded)
   - `variant_02_biggest-only/scene_graph.json` — keep the single largest object (by volume)
   - `variant_03_scrambled/scene_graph.json` — randomize every object's x/y within the room (rotation preserved)
   - `variant_04_worst-object/` — fork the scene + re-retrieve the **worst-CLIP** asset per object into its own `Assets/`
+
+### Rendering (`--render` / `--render-all` / `--path`)
+
+Rendering runs in-process with Blender (bpy 5.1.2) on the `idesign` env (Python
+3.13, which also holds AG2/autogen + the retrieval deps).
+
+```bash
+# Generate, retrieve, write variants, then render base (+variants) at the
+# single baseline config:
+python cli.py --prompt "A cozy living room" --api-key "$OPENAI_API_KEY" \
+    --retrieve --variants --render
+
+# Same, but render the full 6-factor sweep (44 configs) on every scene:
+python cli.py --prompt "A cozy living room" --api-key "$OPENAI_API_KEY" \
+    --retrieve --variants --render-all
+
+# Render an already-generated run (no LLM, no generation):
+python cli.py --path outputs/20260708-023434 --render-all
+```
+
+- `--render`     → one config: res=512, bg=(255,255,255), env=city, focal=50, pitch=0, yaw=0.
+- `--render-all` → the deduped union of 6 sweeps (44 configs):
+  (1) resolution {196,224,256,336,384,448,512,768,1024},
+  (2) focal length {16,24,35,50,85,100,200},
+  (3) pitch {0,15,30,45,60,75,90} at yaw 0,
+  (4) yaw {0,45,90,135,180,225,270,315} at pitch **45**,
+  (5) env map {city,courtyard,forest,interior,night,studio,sunrise,sunset},
+  (6) background {10 colors: 6 grays + white + red/green/blue}.
+  All non-swept factors held at the white/city/50mm/0/0 baseline except the
+  yaw sweep, which runs at pitch 45 so the azimuth is a real viewpoint change.
+- `--render` and `--render-all` are mutually exclusive. `--path` is mutually
+  exclusive with `--prompt` and requires a render flag (render-only mode).
+
+Two-phase per `(res, focal, pitch, yaw, env)`: a transparent master (env-map
+lit, transparent film) is rendered at `fit_ratio=1` (tight-fit), then each
+background color is PIL-composited over it. The architectural shell (floor + 4
+walls from `--room-dims`) is kept and back-face culled (dollhouse convention)
+so oblique views see into the room; near walls vanish automatically at oblique
+pitch. I-Design scene_graphs carry no doors/windows (only symbolic wall priors),
+so the shell is a plain box. Output → `<scene>/renderings/`:
+
+```
+render_res-<r>_focal-<f>_pitch-<p>_yaw-<y>_env-<e>.png                      (transparent master)
+render_res-<r>_focal-<f>_pitch-<p>_yaw-<y>_env-<e>_bg-<r>-<g>-<b>.png       (composited)
+```
 
 Variants are cheap transforms / asset swaps of the already-generated base
 scene; **no LLM regeneration** (no extra cost). `--retrieve` loads the
@@ -86,51 +131,48 @@ A scene dir must contain `scene_graph.json` (flat I-Design list) and `Assets/<id
 
 ## Factor levels
 
-These match Table 1 of the paper EXACTLY.
+These match the user's rendering-audit spec.
 
 - `RESOLUTIONS = [196, 224, 256, 336, 384, 448, 512, 768, 1024]` (9)
 - `FOCAL_LENGTHS = [16, 24, 35, 50, 85, 100, 200]` (7)
-- `BACKGROUND_GRAYS = [0, 65, 128, 186, 204, 255]` (6, used as `(g,g,g)`)
-- `BACKGROUND_CHROMATIC = [(255,0,0), (0,255,0), (0,0,255)]` (3 red/green/blue solids)
-- `FLOOR_TEXTURE_BACKGROUND = "floor_texture"` — the paper's 4th background
-  condition (neutral floor texture) is a render-path treatment, **out of scope**
-  here. It is exposed only as a documented sentinel and is **NEVER rendered**.
+- `BACKGROUNDS` = 10 colors: 6 grays `(0,65,118,128,186,204)` each as `(g,g,g)`,
+  white `(255,255,255)`, and 3 chromatic `(255,0,0)/(0,255,0)/(0,0,255)`.
 - `HDRIS = [city, courtyard, forest, interior, night, studio, sunrise, sunset]` (8)
 - `PITCHES = [0, 15, 30, 45, 60, 75, 90]` (7; pitch 0 == top-down in the bpa convention)
 - `YAWS = [0, 45, 90, 135, 180, 225, 270, 315]` (8 azimuths, 45-deg steps)
 
-Baseline (held for any non-swept factor): RES=512, FOCAL=50, BG=(128,128,128),
-HDRI=city, PITCH=0, YAW=0. `BASELINE_YAW_PITCH=45` is the pitch at which the yaw
-sweep is run (Table 1 "Yaw at pitch 45").
+Baseline (held for any non-swept factor): RES=512, FOCAL=50, BG=(255,255,255),
+HDRI=city, PITCH=0, YAW=0. `YAW_SWEEP_PITCH=45` is the pitch at which the yaw
+sweep is run (the azimuth is meaningless at top-down pitch 0).
 
 Phases (`phase_levels(phase)`):
 
 | Phase | Sweeps |
 |---|---|
 | 1a | resolutions |
-| 1b | background grays |
-| 1b_chroma | chromatic (red/green/blue) backgrounds |
-| 1c | HDRIs |
 | 1d | focal lengths |
 | 2_pitch | pitch at baseline yaw (0) |
-| 2_yaw | yaw at fixed pitch `BASELINE_YAW_PITCH` (45) |
-| 2 | pitch x yaw (cartesian product; kept for backward compatibility) |
+| 2_yaw | yaw at fixed pitch `YAW_SWEEP_PITCH` (45) |
+| 1c | HDRIs |
+| 1b | background colors (all 10) |
 
-`ALL_PHASES = ['1a', '1b', '1b_chroma', '1c', '1d', '2', '2_pitch', '2_yaw']`.
-Every entry of `phase_levels(phase)` is a config dict with keys
-`res, focal, bg, hdri, pitch, yaw`.
+`ALL_PHASES = ['1a', '1d', '2_pitch', '2_yaw', '1c', '1b']`.
+`single_render_config()` returns the one `--render` config (the baseline);
+`all_render_configs()` returns the deduped union of all 6 sweeps (44 configs).
+Every entry is a config dict with keys `res, focal, bg, hdri, pitch, yaw`.
 
 ## Filename scheme
 
-Two-phase rendering per `(res, focal, pitch, yaw, hdri)`:
+Two-phase rendering per `(res, focal, pitch, yaw, env)` at `fit_ratio=1`
+(tight-fit):
 
-1. Transparent master:
-   `render_{res}_{focal}_{pitch}_{yaw}_{hdri}.png`
-2. Background composited (one per gray) via `Renderer.add_bg_to_rgba`:
-   `render_{res}_{focal}_{r}_{g}_{b}_{pitch}_{yaw}_{hdri}.png`
+1. Transparent master (env-map lit, transparent film):
+   `render_res-{res}_focal-{focal}_pitch-{pitch}_yaw-{yaw}_env-{env}.png`
+2. Background composited (one per bg color) via `Renderer.add_bg_to_rgba`:
+   `render_res-{res}_focal-{focal}_pitch-{pitch}_yaw-{yaw}_env-{env}_bg-{r}-{g}-{b}.png`
 
-All PNGs are written to `<scene-dir>/renderings/`. Changing HDRI triggers
-`initialize(environment_map=("vlmunr_hdri/<hdri>.exr", 1.0))`.
+All PNGs are written to `<scene-dir>/renderings/` (ALWAYS named "renderings").
+Changing HDRI triggers `initialize(environment_map=(vlmunr_hdri/<env>.exr, 1.0))`.
 
 ## I-Design coordinate convention
 
