@@ -4,6 +4,7 @@ from autogen.agentchat.user_proxy_agent import UserProxyAgent
 from autogen.agentchat.assistant_agent import AssistantAgent
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from jsonschema import validate
 from copy import deepcopy
@@ -99,6 +100,34 @@ gpt4_config = _DEFAULT_CFG["manager"]
 gpt4_json_config = _DEFAULT_CFG["json"]
 gpt4_json_engineer_config = _DEFAULT_CFG["engineer"]
 
+def _extract_json(content):
+    """Best-effort parse of an agent message into a JSON object.
+
+    Tolerates ```json fences and embedded {...} blocks. Returns the parsed
+    object, or None if the content is empty / missing / not parseable JSON.
+    Used by JSONSchemaAgent.get_human_input so an empty/garbled Engineer reply
+    becomes retry feedback instead of a JSONDecodeError crash.
+    """
+    if content is None:
+        return None
+    if not isinstance(content, str):
+        return None
+    text = content.strip()
+    if text == "":
+        return None
+    m = re.search(r"```(?:json)?\s*(.+?)\s*```", text, re.DOTALL)
+    if m is not None:
+        text = m.group(1)
+    else:
+        m = re.search(r"\{.*\}", text, re.DOTALL)
+        if m is not None:
+            text = m.group(0)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return None
+
+
 def is_termination_msg(content) -> bool:
     have_content = content.get("content", None) is not None
     if have_content and content["name"] == "Json_schema_debugger" and "SUCCESS" in content["content"]:
@@ -124,19 +153,32 @@ class JSONSchemaAgent(UserProxyAgent):
         preps_layout = ['in front', 'on', 'in the corner', 'in the middle of']
         preps_objs = ['on', 'left of', 'right of', 'in front', 'behind', 'under', 'above']
 
-        json_obj_new = json.loads(message["content"])
+        # The engineer (chatanywhere proxy) can return empty or non-JSON
+        # content. Don't crash on json.loads("") -- turn it into feedback so
+        # the existing debugger<->engineer loop (max_round) retries the call.
+        content = message.get("content") if message else None
+        json_obj_new = _extract_json(content)
+        if json_obj_new is None:
+            raw = repr(content)[:300]
+            return (
+                "Your previous reply was empty or not valid JSON. "
+                "Regenerate the full objects_in_room scene graph as a single "
+                f"JSON object matching the schema. (raw was: {raw})"
+            )
+
         try:
             json_obj_new_ids = [item["new_object_id"] for item in json_obj_new["objects_in_room"]]
         except:
             return "Use 'new_object_id' instead of 'object_id'!"
 
         is_success  = False
+        feedback = None
         try:
             validate(instance=json_obj_new, schema=initial_schema)
             is_success = True
         except Exception as e:
             feedback = str(e.message)
-            if e.validator == "enum":
+            if getattr(e, "validator", None) == "enum":
                 if e.instance in json_obj_new_ids:
                     feedback += f" Put the {e.instance} object under 'objects_in_room' instead of 'room_layout_elements' and delete the {e.instance} object under 'room_layout_elements'"
                 elif str(preps_objs) in e.message:
@@ -146,6 +188,10 @@ class JSONSchemaAgent(UserProxyAgent):
 
         if is_success:
             return "SUCCESS"
+        if feedback is None:
+            # Validation raised without producing a message -- still ask for a
+            # retry rather than crashing on an undefined name.
+            return "The scene graph did not validate. Regenerate it as valid JSON matching the schema."
         return feedback
 
 def create_agents(no_of_objects : int, llm_config: Optional[LLMConfig] = None):
