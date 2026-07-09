@@ -119,7 +119,7 @@ class JSONSchemaAgent(UserProxyAgent):
             code_execution_config=False,
         )
 
-    def get_human_input(self, prompt: str) -> str:
+    def get_human_input(self, prompt: str, *, iostream=None) -> str:
         message = self.last_message()
         preps_layout = ['in front', 'on', 'in the corner', 'in the middle of']
         preps_objs = ['on', 'left of', 'right of', 'in front', 'behind', 'under', 'above']
