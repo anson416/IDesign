@@ -395,6 +395,14 @@ def _room_dims_from_config(run_dir: str) -> list:
 
 
 def main(argv: Optional[list] = None) -> int:
+    # On a headless server there is no X display; matplotlib's default backend
+    # may try to open a window. Force the non-interactive Agg backend (always
+    # available, unlike cv2's "offscreen" Qt plugin) so plt calls never block
+    # or crash. The viz helpers in utils.py additionally skip cv2.imshow on
+    # headless and write PNGs instead.
+    if not os.environ.get("DISPLAY"):
+        os.environ.setdefault("MPLBACKEND", "Agg")
+
     parser = argparse.ArgumentParser(
         description="Generate and/or render an I-Design scene."
     )

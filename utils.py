@@ -3,11 +3,71 @@ from matplotlib import pyplot as plt
 import numpy as np
 import cv2
 from copy import copy, deepcopy
+import os
 import random
 
 from constraint_functions import get_above_constraint, get_behind_constraint, get_in_corner_constraint, get_in_front_constraint, get_left_of_constraint, get_right_of_constraint, get_on_constraint, get_under_contraint
 
 ROOM_LAYOUT_ELEMENTS = ["south_wall", "north_wall", "west_wall", "east_wall", "ceiling", "middle of the room"]
+
+
+# --- Headless-safe visualization helpers -------------------------------------
+# The verbose pipeline calls cv2.imshow/waitKey and plt.show() for debug
+# visualization. On a headless server there is no X display, and the installed
+# cv2 only ships the "xcb" Qt platform plugin (not "offscreen"), so any
+# HighGUI/Qt init aborts with "could not load the Qt platform plugin xcb".
+# Worse, even if Qt were suppressed, cv2.waitKey(0) would hang forever waiting
+# for a keypress that never comes. So on a headless box we save the figure to
+# a PNG instead of showing it, and skip the blocking waitKey.
+_VIZ_COUNTER = 0
+
+
+def _display_available() -> bool:
+    """True if an interactive display is reachable (False on headless servers).
+
+    Checks $DISPLAY (Linux/X11). On macOS a display is normally available, so
+    interactive dev machines keep the original pop-up behavior.
+    """
+    return bool(os.environ.get("DISPLAY"))
+
+
+def _viz_dir() -> str:
+    """Directory for headless debug-visualization PNGs. Created on first use.
+
+    Override with $VLMUNR_VIZ_DIR; defaults to ./outputs/_viz.
+    """
+    d = os.environ.get("VLMUNR_VIZ_DIR") or os.path.join("outputs", "_viz")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _next_viz_path(label: str, ext: str = ".png") -> str:
+    """A unique path for a headless viz artifact, e.g. .../_viz/boxes_001.png."""
+    global _VIZ_COUNTER
+    _VIZ_COUNTER += 1
+    return os.path.join(_viz_dir(), f"{label}_{_VIZ_COUNTER:03d}{ext}")
+
+
+def _show_or_save_image(img, label: str = "image"):
+    """cv2.imshow + waitKey(0) on a display; else imwrite + no blocking."""
+    if _display_available():
+        cv2.imshow(label, img)
+        cv2.waitKey(0)
+    else:
+        path = _next_viz_path(label)
+        cv2.imwrite(path, img)
+        print(f"[viz] wrote {path}")
+
+
+def _show_or_save_figure(label: str = "figure"):
+    """plt.show() on a display; else savefig the current figure (no blocking)."""
+    if _display_available():
+        plt.show()
+    else:
+        path = _next_viz_path(label)
+        plt.savefig(path, bbox_inches="tight")
+        print(f"[viz] wrote {path}")
+        plt.close()
 
 def get_room_priors(room_dimensions):
     x_mid = room_dimensions[0] / 2
@@ -751,7 +811,7 @@ def clean_and_extract_edges(relationships, parent_id, verbose):
         pos_original = nx.spring_layout(dag)
         nx.draw(dag, pos_original, with_labels=True, font_weight='bold', node_size=700, arrowsize=20)
         plt.title("Original Graph")
-        plt.show()
+        _show_or_save_figure("dag")
 
     dag = remove_edges_with_connectivity(dag, verbose)
     
@@ -772,7 +832,7 @@ def clean_and_extract_edges(relationships, parent_id, verbose):
         nx.draw(binary_tree, pos_binary_tree, with_labels=True, font_weight='bold', node_size=700, arrowsize=20)
         plt.title("Binary Tree")
 
-        plt.show()
+        _show_or_save_figure("binary_tree")
 
     return binary_tree.edges(), flipped_edges
 
@@ -789,8 +849,7 @@ def create_empty_image_with_boxes(image_size, boxes):
             x, y = int(x - w/2) , int(y - h/2)
             cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
         cv2.putText(img, label, (x, y - 10), cv2.FONT_ITALIC , 0.5, (255, 255, 255), 1)
-    cv2.imshow("image", img) 
-    key = cv2.waitKey(0)
+    _show_or_save_image(img, "boxes")
 
 def get_visualization(scene_graph, room_priors=None):
     visual_scene_graph = [

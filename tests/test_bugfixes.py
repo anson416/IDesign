@@ -209,3 +209,72 @@ def test_json_schema_agents_return_success_on_valid_json():
         assert inst.get_human_input("p") == "SUCCESS", (
             f"{label}: valid JSON did not return SUCCESS"
         )
+
+
+def test_viz_gui_calls_are_headless_safe():
+    """cv2.imshow/waitKey and plt.show() must only live inside the headless-safe
+    helpers, never at a call site. A raw call at a call site aborts on a
+    headless server ("could not load the Qt platform plugin xcb") and, even if
+    Qt were suppressed, cv2.waitKey(0) hangs forever. This pins that the GUI
+    display calls are confined to _show_or_save_image/_show_or_save_figure so a
+    future call site can't reintroduce the crash."""
+    import re
+
+    import utils as utils_mod
+    src = inspect.getsource(utils_mod)
+
+    # Strip the two helper definitions and their docstrings/comments; any GUI
+    # call surviving outside them is a regression.
+    helper_re = re.compile(
+        r"def _show_or_save_image\(.*?(?=\ndef )",
+        re.DOTALL,
+    )
+    src_no_helpers = helper_re.sub("", src)
+    helper_re2 = re.compile(
+        r"def _show_or_save_figure\(.*?\Z",
+        re.DOTALL,
+    )
+    src_no_helpers = helper_re2.sub("", src_no_helpers)
+    # Also drop comment lines that merely mention these names in prose.
+    src_no_helpers = "\n".join(
+        line for line in src_no_helpers.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+    leaks = re.findall(r"cv2\.imshow|cv2\.waitKey|plt\.show\(\)", src_no_helpers)
+    assert not leaks, (
+        f"raw GUI display calls must only appear inside the headless-safe "
+        f"helpers, but found at call sites: {leaks}"
+    )
+
+
+def test_viz_headless_writes_png_and_does_not_block(tmp_path):
+    """On a headless box (no $DISPLAY) the viz helpers must write a PNG and
+    NOT call the blocking cv2.waitKey(0)."""
+    import cv2
+    import numpy as np
+    from matplotlib import pyplot as plt
+
+    utils = importlib.import_module("utils")
+    importlib.reload(utils)
+    old = dict(DISPLAY=os.environ.pop("DISPLAY", None),
+               VLMUNR_VIZ_DIR=os.environ.get("VLMUNR_VIZ_DIR"))
+    os.environ["VLMUNR_VIZ_DIR"] = str(tmp_path)
+    try:
+        assert utils._display_available() is False
+        img = np.zeros((8, 8, 3), dtype=np.uint8)
+        utils._show_or_save_image(img, "boxes")
+        plt.figure()
+        plt.plot([0, 1], [0, 1])
+        utils._show_or_save_figure("dag")
+        pngs = list(tmp_path.glob("*.png"))
+        assert len(pngs) == 2, pngs
+        for p in pngs:
+            assert cv2.imread(str(p)) is not None, f"unreadable viz: {p}"
+    finally:
+        if old["DISPLAY"] is not None:
+            os.environ["DISPLAY"] = old["DISPLAY"]
+        if old["VLMUNR_VIZ_DIR"] is not None:
+            os.environ["VLMUNR_VIZ_DIR"] = old["VLMUNR_VIZ_DIR"]
+        else:
+            os.environ.pop("VLMUNR_VIZ_DIR", None)
