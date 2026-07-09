@@ -5,51 +5,45 @@ from autogen.agentchat.user_proxy_agent import UserProxyAgent
 from autogen.agentchat.assistant_agent import AssistantAgent
 from copy import deepcopy
 from jsonschema import validate
-import json
-import re
+from typing import Optional
 
 from schemas import layout_corrector_schema, deletion_schema
-from agents import is_termination_msg
+from agents import is_termination_msg, JSONSchemaValidatorAgent
 
-class JSONSchemaAgent(UserProxyAgent):
-    def __init__(self, name : str, is_termination_msg):
-        super().__init__(name, is_termination_msg=is_termination_msg)
+class JSONSchemaAgent(JSONSchemaValidatorAgent):
+    """Debugger for the spatial-corrector phase (validates
+    ``layout_corrector_schema``).
 
-    def get_human_input(self, prompt: str) -> str:
-        message = self.last_message()
+    Inherits Docker-free init, the iostream-aware get_human_input signature,
+    and tolerant empty/invalid-JSON handling from JSONSchemaValidatorAgent so
+    it can't re-introduce the char-0 / docker-probe crashes the prior copy had.
+    """
+
+    def _validate(self, json_obj) -> tuple[bool, Optional[str]]:
         preps_layout = ["left-side", "right-side", "in the middle"]
         preps_objs = ['on', 'left of', 'right of', 'in front', 'behind', 'under', 'above']
 
-        content = message["content"]
-        # The model may or may not wrap the JSON in ```json ... ``` fences;
-        # accept either, falling back to the first {...} block, then raw content.
-        pattern = r'```(?:json)?\s*(.+?)\s*```'
-        m = re.search(pattern, content, re.DOTALL)
-        if m is not None:
-            match = m.group(1)
-        else:
-            brace = re.search(r'\{.*\}', content, re.DOTALL)
-            match = brace.group(0) if brace is not None else content
-
-        json_obj_new = json.loads(match)
-
-        is_success  = False
+        is_success = False
+        feedback: Optional[str] = None
         try:
-            validate(instance=json_obj_new, schema=layout_corrector_schema)
+            validate(instance=json_obj, schema=layout_corrector_schema)
             is_success = True
         except Exception as e:
             feedback = str(e.message)
-            if e.validator == "enum":
+            if getattr(e, "validator", None) == "enum":
                 if str(preps_objs) in e.message:
-                    feedback += f"Change the preposition {e.instance} to something suitable with the intended positioning from the list {preps_objs}"
+                    feedback += (
+                        f"Change the preposition {e.instance} to something "
+                        f"suitable with the intended positioning from the list {preps_objs}"
+                    )
                 elif str(preps_layout) in e.message:
-                    feedback += f"Change the preposition {e.instance} to something suitable with the intended positioning from the list {preps_layout}"
-        if is_success:
-            return "SUCCESS"
-        return feedback
+                    feedback += (
+                        f"Change the preposition {e.instance} to something "
+                        f"suitable with the intended positioning from the list {preps_layout}"
+                    )
+        return is_success, feedback
 
 import os as _os
-from typing import Optional
 from agents import LLMConfig, build_configs
 
 def get_corrector_agents(llm_config: Optional[LLMConfig] = None):

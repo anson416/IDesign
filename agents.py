@@ -135,64 +135,127 @@ def is_termination_msg(content) -> bool:
     return False
 
 
-class JSONSchemaAgent(UserProxyAgent):
-    def __init__(self, name : str, is_termination_msg):
-        # code_execution_config=False avoids autogen's Docker probe, which
-        # crashes when the installed `docker` package isn't the real SDK
-        # (module 'docker' has no attribute 'from_env'/'errors'). This agent
-        # only overrides get_human_input for JSON-schema validation, so it
-        # never needs code execution anyway.
+class JSONSchemaValidatorAgent(UserProxyAgent):
+    """Base class for the `Json_schema_debugger` user-proxy agents used across
+    the pipeline phases (initial design, corrector, refiner).
+
+    A `UserProxyAgent` whose `get_human_input` is repurposed to validate the
+    last agent's reply against a JSON schema and return either ``"SUCCESS"`` or
+    textual feedback that drives the debugger<->agent retry loop.
+
+    All the crash-prone plumbing lives here ONCE so each phase can't
+    re-introduce the same failures:
+
+    * ``code_execution_config=False`` -> autogen never probes Docker (the
+      installed ``docker`` package on the server is a stub: ``AttributeError:
+      module 'docker' has no attribute 'from_env'/'errors'``). This agent never
+      runs code anyway.
+    * ``get_human_input`` accepts ``iostream=None`` (autogen 0.14 base
+      signature) so it isn't a ``TypeError`` when the runtime passes it.
+    * Content is parsed via ``_extract_json`` (tolerates ```json fences and
+      embedded ``{...}``); empty/garbled proxy replies become retry feedback
+      instead of ``JSONDecodeError: char 0``.
+    * Validation exceptions are guarded (``getattr(e, "validator", None)``,
+      ``feedback`` default) so a non-enum error can't re-crash.
+
+    Subclasses override ``_validate(json_obj)`` to validate against their own
+    schema and return ``(is_success, feedback)``.
+    """
+
+    def __init__(self, name: str, is_termination_msg):
         super().__init__(
             name,
             is_termination_msg=is_termination_msg,
             code_execution_config=False,
         )
 
-    def get_human_input(self, prompt: str, *, iostream=None) -> str:
-        message = self.last_message()
-        preps_layout = ['in front', 'on', 'in the corner', 'in the middle of']
-        preps_objs = ['on', 'left of', 'right of', 'in front', 'behind', 'under', 'above']
+    def _validate(self, json_obj) -> tuple[bool, Optional[str]]:
+        """Validate ``json_obj`` against this agent's schema.
 
-        # The engineer (chatanywhere proxy) can return empty or non-JSON
+        Returns ``(is_success, feedback)`` where feedback is ``None`` on
+        success and a human-readable correction string otherwise. Subclasses
+        must override this.
+        """
+        raise NotImplementedError
+
+    def get_human_input(self, prompt: str, *, iostream=None) -> str:
+        # The upstream agent (chatanywhere proxy) can return empty or non-JSON
         # content. Don't crash on json.loads("") -- turn it into feedback so
-        # the existing debugger<->engineer loop (max_round) retries the call.
+        # the existing debugger<->agent loop (max_round) retries the call.
+        message = self.last_message()
         content = message.get("content") if message else None
         json_obj_new = _extract_json(content)
         if json_obj_new is None:
             raw = repr(content)[:300]
             return (
                 "Your previous reply was empty or not valid JSON. "
-                "Regenerate the full objects_in_room scene graph as a single "
-                f"JSON object matching the schema. (raw was: {raw})"
+                "Regenerate the full scene graph as a single JSON object "
+                f"matching the schema. (raw was: {raw})"
             )
 
-        try:
-            json_obj_new_ids = [item["new_object_id"] for item in json_obj_new["objects_in_room"]]
-        except:
-            return "Use 'new_object_id' instead of 'object_id'!"
+        # Give subclasses a chance to flag well-known structural mistakes (e.g.
+        # wrong key name) before schema validation, returning retry feedback.
+        structural = self._check_structure(json_obj_new)
+        if structural is not None:
+            return structural
 
-        is_success  = False
-        feedback = None
+        is_success, feedback = self._validate(json_obj_new)
+        if is_success:
+            return "SUCCESS"
+        if feedback is None:
+            return "The scene graph did not validate. Regenerate it as valid JSON matching the schema."
+        return feedback
+
+    def _check_structure(self, json_obj) -> Optional[str]:
+        """Hook for subclasses to reject structurally-wrong JSON (wrong key
+        names, missing top-level arrays) with targeted feedback *before* schema
+        validation. Return a feedback string, or ``None`` to proceed."""
+        return None
+
+
+class JSONSchemaAgent(JSONSchemaValidatorAgent):
+    """Debugger for the initial-design engineer (validates ``initial_schema``)."""
+
+    def _check_structure(self, json_obj) -> Optional[str]:
         try:
-            validate(instance=json_obj_new, schema=initial_schema)
+            [item["new_object_id"] for item in json_obj["objects_in_room"]]
+        except (KeyError, TypeError):
+            return "Use 'new_object_id' instead of 'object_id'!"
+        return None
+
+    def _validate(self, json_obj) -> tuple[bool, Optional[str]]:
+        preps_layout = ['in front', 'on', 'in the corner', 'in the middle of']
+        preps_objs = ['on', 'left of', 'right of', 'in front', 'behind', 'under', 'above']
+        try:
+            json_obj_ids = [item["new_object_id"] for item in json_obj["objects_in_room"]]
+        except (KeyError, TypeError):
+            json_obj_ids = []
+
+        is_success = False
+        feedback: Optional[str] = None
+        try:
+            validate(instance=json_obj, schema=initial_schema)
             is_success = True
         except Exception as e:
             feedback = str(e.message)
             if getattr(e, "validator", None) == "enum":
-                if e.instance in json_obj_new_ids:
-                    feedback += f" Put the {e.instance} object under 'objects_in_room' instead of 'room_layout_elements' and delete the {e.instance} object under 'room_layout_elements'"
+                if e.instance in json_obj_ids:
+                    feedback += (
+                        f" Put the {e.instance} object under 'objects_in_room' "
+                        f"instead of 'room_layout_elements' and delete the "
+                        f"{e.instance} object under 'room_layout_elements'"
+                    )
                 elif str(preps_objs) in e.message:
-                    feedback += f"Change the preposition {e.instance} to something suitable with the intended positioning from the list {preps_objs}"
-                elif str(preps_objs) in e.message:
-                    feedback += f"Change the preposition {e.instance} to something suitable with the intended positioning from the list {preps_layout}"
-
-        if is_success:
-            return "SUCCESS"
-        if feedback is None:
-            # Validation raised without producing a message -- still ask for a
-            # retry rather than crashing on an undefined name.
-            return "The scene graph did not validate. Regenerate it as valid JSON matching the schema."
-        return feedback
+                    feedback += (
+                        f"Change the preposition {e.instance} to something "
+                        f"suitable with the intended positioning from the list {preps_objs}"
+                    )
+                elif str(preps_layout) in e.message:
+                    feedback += (
+                        f"Change the preposition {e.instance} to something "
+                        f"suitable with the intended positioning from the list {preps_layout}"
+                    )
+        return is_success, feedback
 
 def create_agents(no_of_objects : int, llm_config: Optional[LLMConfig] = None):
     cfg = build_configs(llm_config)

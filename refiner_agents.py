@@ -5,40 +5,55 @@ from autogen.agentchat.user_proxy_agent import UserProxyAgent
 from autogen.agentchat.assistant_agent import AssistantAgent
 from copy import deepcopy
 from jsonschema import validate
-import json
+from typing import Optional
 
 from schemas import layout_refiner_schema
-from agents import is_termination_msg
+from agents import is_termination_msg, JSONSchemaValidatorAgent
 
-class JSONSchemaAgent(UserProxyAgent):
-    def __init__(self, name : str, is_termination_msg):
-        super().__init__(name, is_termination_msg=is_termination_msg)
+class JSONSchemaAgent(JSONSchemaValidatorAgent):
+    """Debugger for the layout-refiner phase (validates
+    ``layout_refiner_schema``).
 
-    def get_human_input(self, prompt: str) -> str:
-        message = self.last_message()
+    Inherits Docker-free init, the iostream-aware get_human_input signature,
+    and tolerant empty/invalid-JSON handling from JSONSchemaValidatorAgent so
+    it can't re-introduce the char-0 / docker-probe crashes the prior copy had.
+    """
+
+    def _check_structure(self, json_obj) -> Optional[str]:
+        # The refiner model sometimes returns children_objects wrapped in an
+        # extra {"items": [...]} envelope; unwrap it in place before validating.
+        try:
+            if "items" in json_obj["children_objects"]:
+                json_obj["children_objects"] = json_obj["children_objects"]["items"]
+        except (KeyError, TypeError):
+            pass
+        return None
+
+    def _validate(self, json_obj) -> tuple[bool, Optional[str]]:
         preps_layout = ["left-side", "right-side", "in the middle"]
         preps_objs = ['on', 'left of', 'right of', 'in front', 'behind', 'under', 'above']
 
-        json_obj_new = json.loads(message["content"])
-        if "items" in json_obj_new["children_objects"]:
-            json_obj_new = {"children_objects" : json_obj_new["children_objects"]["items"]}
-        is_success  = False
+        is_success = False
+        feedback: Optional[str] = None
         try:
-            validate(instance=json_obj_new, schema=layout_refiner_schema)
+            validate(instance=json_obj, schema=layout_refiner_schema)
             is_success = True
         except Exception as e:
             feedback = str(e.message)
-            if e.validator == "enum":
+            if getattr(e, "validator", None) == "enum":
                 if str(preps_objs) in e.message:
-                    feedback += f"Change the preposition {e.instance} to something suitable with the intended positioning from the list {preps_objs}"
+                    feedback += (
+                        f"Change the preposition {e.instance} to something "
+                        f"suitable with the intended positioning from the list {preps_objs}"
+                    )
                 elif str(preps_layout) in e.message:
-                    feedback += f"Change the preposition {e.instance} to something suitable with the intended positioning from the list {preps_layout}"
-        if is_success:
-            return "SUCCESS"
-        return feedback
+                    feedback += (
+                        f"Change the preposition {e.instance} to something "
+                        f"suitable with the intended positioning from the list {preps_layout}"
+                    )
+        return is_success, feedback
 
 import os as _os
-from typing import Optional
 from agents import LLMConfig, build_configs
 
 def get_refiner_agents(llm_config: Optional[LLMConfig] = None):
