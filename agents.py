@@ -108,7 +108,16 @@ def is_termination_msg(content) -> bool:
 
 class JSONSchemaAgent(UserProxyAgent):
     def __init__(self, name : str, is_termination_msg):
-        super().__init__(name, is_termination_msg=is_termination_msg)
+        # code_execution_config=False avoids autogen's Docker probe, which
+        # crashes when the installed `docker` package isn't the real SDK
+        # (module 'docker' has no attribute 'from_env'/'errors'). This agent
+        # only overrides get_human_input for JSON-schema validation, so it
+        # never needs code execution anyway.
+        super().__init__(
+            name,
+            is_termination_msg=is_termination_msg,
+            code_execution_config=False,
+        )
 
     def get_human_input(self, prompt: str) -> str:
         message = self.last_message()
