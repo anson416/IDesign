@@ -348,6 +348,26 @@ def _scene_dirs_to_render(run_dir: str, want_variants: bool) -> list:
     return dirs
 
 
+def _resolve_scene_assets_dir(scene_dir: str) -> str:
+    """Resolve where a scene's .glb assets live, mirroring the renderer's
+    `_resolve_assets_dir` in vlmunr_render.py.
+
+    A scene either has its own Assets/ dir (base, variant_04) or records the
+    original Assets path in vlmunr_assets_dir.txt (variant_01-03, which share
+    the base Assets/). Falls back to <scene_dir>/Assets when neither applies.
+    """
+    marker = os.path.join(scene_dir, "vlmunr_assets_dir.txt")
+    if os.path.exists(marker):
+        try:
+            with open(marker) as f:
+                resolved = f.read().strip()
+            if resolved:
+                return resolved
+        except OSError:
+            pass
+    return os.path.join(scene_dir, "Assets")
+
+
 def _render_run(
     run_dir: str, room_dims: list, mode: str, want_variants: bool
 ) -> None:
@@ -360,15 +380,19 @@ def _render_run(
         return
     scene_dirs = _scene_dirs_to_render(run_dir, want_variants)
     for sd in scene_dirs:
-        # Warn if a scene has no Assets (nothing to show but the shell).
-        assets = os.path.join(sd, "Assets")
+        # Warn if a scene has no resolvable Assets (nothing to show but the
+        # shell). Variant dirs 01-03 share the base Assets/ via a
+        # vlmunr_assets_dir.txt marker instead of a local Assets/ dir, so we
+        # must resolve through the marker -- exactly as the renderer does --
+        # not just check <sd>/Assets.
+        assets = _resolve_scene_assets_dir(sd)
         if not os.path.isdir(assets) or not any(
             f.endswith(".glb")
             for f in os.listdir(assets)
             if os.path.isfile(os.path.join(assets, f))
         ):
             print(
-                f"[cli] WARNING: no .glb assets in {sd}/Assets — rendering "
+                f"[cli] WARNING: no .glb assets in {assets} — rendering "
                 "the shell only (did you forget --retrieve?).",
                 file=sys.stderr,
             )
