@@ -1196,9 +1196,21 @@ def place_object(obj, scene_graph, room_dimensions, errors=None, verbose=False, 
         return errors
     
     counter = 0
+    # If the feasible region is degenerate (a point or a line: zero extent in
+    # any axis), random sampling can't explore it and the loop below would just
+    # re-draw the same coordinates. Cap the retries accordingly: a single point
+    # gets ONE attempt, a line/slab gets a handful. The previous code force-set
+    # `counter = 50` on a point bbox, which (with the `counter += 1` above)
+    # immediately tripped the `counter > 50` bail-out -- so the unique candidate
+    # was NEVER collision-tested and every point-bbox placement spuriously
+    # reported `no_positions_found`, stalling the outer backtrack loop. (See
+    # utils.py git history for the bug that surfaced for tightly-constrained
+    # child objects like a trash_can wedged between a wall and its parent.)
+    point_bbox_overlap = is_point_bbox(overlap)
+    max_attempts = 1 if point_bbox_overlap else 50
     while True:
         counter += 1
-        if counter > 50:
+        if counter > max_attempts:
             if verbose:
                 print("No positions found for object: ", obj["new_object_id"])
                 print(overlap)
@@ -1211,8 +1223,6 @@ def place_object(obj, scene_graph, room_dimensions, errors=None, verbose=False, 
                 # print("OBJECT DELETED!!")
                 # scene_graph.remove(obj)
             return errors
-        if is_point_bbox(overlap):
-            counter = 50
         x = random.uniform(overlap[0], overlap[1])
         y = random.uniform(overlap[2], overlap[3])
         z = random.uniform(overlap[4], overlap[5])

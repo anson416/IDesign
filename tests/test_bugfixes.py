@@ -62,6 +62,79 @@ def test_place_object_does_not_share_errors_default():
     assert utils.place_object.__defaults__[0] is None
 
 
+def _south_wall():
+    return {
+        "new_object_id": "south_wall",
+        "facing": "south_wall",
+        "position": {"x": 2.0, "y": 0.0, "z": 1.25},
+        "rotation": {"z_angle": 0.0},
+        "size_in_meters": {"length": 4.0, "width": 0.0, "height": 2.5},
+        "placement": {"room_layout_elements": [], "objects_in_room": []},
+    }
+
+
+def _trash_can(oid, cluster_area):
+    return {
+        "new_object_id": oid,
+        "is_on_the_floor": True,
+        "size_in_meters": {"length": 0.4, "width": 0.4, "height": 0.8},
+        "rotation": {"z_angle": 0.0},
+        "placement": {
+            "room_layout_elements": [
+                {"layout_element_id": "south_wall", "preposition": "on", "is_adjacent": True}
+            ],
+            "objects_in_room": [],
+        },
+        "cluster": {"constraint_area": dict(cluster_area)},
+    }
+
+
+def test_place_object_places_point_bbox_region():
+    """An object whose feasible region collapses to a point bbox (zero extent
+    in one axis, e.g. a trash_can pinned to a wall by its cluster constraint)
+    must still be placed -- the unique candidate must be collision-tested, not
+    silently reported as `no_positions_found`.
+
+    Regression for the `if is_point_bbox(overlap): counter = 50` bug, which
+    force-set the counter so the next tick tripped the `counter > 50` bail-out
+    BEFORE the candidate was ever tested. That produced a spurious
+    `no_positions_found` error on every point-bbox placement and stalled the
+    outer backtrack loop in IDesign.backtrack().
+    """
+    utils = importlib.import_module("utils")
+    room = [4.0, 4.0, 2.5]
+    child = _trash_can("trash_can_1", {"x_neg": 0.0, "x_pos": 0.0, "y_neg": 0.0, "y_pos": 3.6})
+    sg = [_south_wall(), child]
+
+    errors = utils.place_object(child, sg, room, verbose=False)
+
+    assert ("no_positions_found", "trash_can_1") not in errors, errors
+    assert "position" in child, "point-bbox region should be placed"
+    assert abs(child["position"]["y"] - 0.2) < 1e-6
+
+
+def test_place_object_errors_on_colliding_point_bbox_region():
+    """The point-bbox fix must not disable collision detection: when the only
+    feasible point is actually occupied by another object, place_object must
+    still report `no_positions_found` rather than place a colliding object."""
+    utils = importlib.import_module("utils")
+    room = [4.0, 4.0, 2.5]
+    blocker = {
+        "new_object_id": "blocker_1",
+        "position": {"x": 2.0, "y": 0.2, "z": 0.4},
+        "rotation": {"z_angle": 0.0},
+        "size_in_meters": {"length": 4.0, "width": 0.4, "height": 0.8},
+        "placement": {"room_layout_elements": [], "objects_in_room": []},
+    }
+    child = _trash_can("trash_can_2", {"x_neg": 0.0, "x_pos": 0.0, "y_neg": 0.0, "y_pos": 3.6})
+    sg = [_south_wall(), blocker, child]
+
+    errors = utils.place_object(child, sg, room, verbose=False)
+
+    assert ("no_positions_found", "trash_can_2") in errors, errors
+    assert "position" not in child, "colliding point-bbox region must not be placed"
+
+
 def test_get_no_overlap_reason_does_not_share_errors_default():
     utils = importlib.import_module("utils")
     obj = {
