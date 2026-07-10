@@ -602,6 +602,12 @@ class IDesign:
                 node_obj = get_object_from_scene_graph(
                     node, self.scene_graph["objects_in_room"]
                 )
+                # build_graph adds a node for every referenced object_id, even
+                # when that object is absent from scene_graph (a dangling
+                # reference the LLM/corrector left behind). Skip such nodes —
+                # they have no dict to attach a cluster to.
+                if node_obj is None:
+                    continue
                 cluster_size = {
                     "x_neg": cluster_size["left of"],
                     "x_pos": cluster_size["right of"],
