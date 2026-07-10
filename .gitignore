@@ -1,7 +1,7 @@
 # User-defined
 .claude/
 OpenShape-Embeddings/
-outputs/
+outputs*/
 OAI_CONFIG_LIST.json
 
 # System files
