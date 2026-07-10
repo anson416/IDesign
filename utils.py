@@ -146,6 +146,11 @@ def find_key(dictionary, value):
     return None
         
 def get_conflicts(G, scene_graph):
+    # The corrector loop rebuilds G from the (LLM-edited) scene_graph each
+    # iteration, so a fresh cycle can appear here even though
+    # remove_unnecessary_edges already broke the initial ones. Guard every
+    # topological_sort-based check at once by breaking cycles up front.
+    _break_cycles(G)
     conflicts_wall = check_wall_relationship_impossibilities(G, scene_graph)
     conflicts_corner = check_corner_relationship_impossibilities(G, scene_graph)
     conflicts_room_layout = find_room_layout_conflicts(G, scene_graph)
@@ -252,10 +257,42 @@ def find_room_layout_conflicts(G, scene_graph):
             node_layout[node] = node
     return conflicts
 
+def _break_cycles(G):
+    """
+    Make a directed graph acyclic by removing one back-edge per cycle.
+
+    The scene graph is LLM-generated, so mutual relationships (e.g. A is
+    "left of" B while B is "right of" A) can introduce directed cycles.
+    `nx.topological_sort` requires a DAG and raises `NetworkXUnfeasible` on a
+    cycle, which would abort the whole scene. We break cycles the same way
+    `clean_and_extract_edges` and `flip_edges_to_binary_tree` already do:
+    find each simple cycle and drop its closing edge. The scene keeps running
+    with a partial graph; downstream backtrack() + FALLBACK_POS still place
+    any object that lost a parent this way.
+
+    Mutates `G` in place (mirrors `remove_unnecessary_edges` / `handle_under_prepositions`).
+    """
+    while not nx.is_directed_acyclic_graph(G):
+        cycles = list(nx.simple_cycles(G))
+        if not cycles:
+            break
+        cycle = cycles[0]
+        # cycle == [n0, n1, ..., nk] with edge nk -> n0 closing the loop.
+        u, v = cycle[-1], cycle[0]
+        weight = G[u][v].get("weight") if "weight" in G[u][v] else None
+        preposition = weight["preposition"] if isinstance(weight, dict) else "?"
+        print(
+            f"CYCLE_BREAK: removing edge {u} -> {v} ({preposition}) to break "
+            f"cycle {cycle}"
+        )
+        G.remove_edge(u, v)
+    return G
+
 def remove_unnecessary_edges(G):
     """
     Remove non-corner relationships if the object has a corner relationship
     """
+    _break_cycles(G)
     topological_order = list(nx.topological_sort(G))
     for node in topological_order:
         if node not in ROOM_LAYOUT_ELEMENTS:
@@ -1029,7 +1066,10 @@ def get_topological_ordering(scene_graph):
                     G.add_node(constraint["object_id"])
                 G.add_edge(constraint["object_id"], obj["new_object_id"])
     
-    # Topological ordering
+    # Topological ordering. _break_cycles mirrors the guard in
+    # remove_unnecessary_edges / get_conflicts: the scene_graph may still
+    # carry a mutual relationship that would make topological_sort raise.
+    _break_cycles(G)
     return list(nx.topological_sort(G))
 
 def get_no_overlap_reason(obj, positions, cluster_constraint=None, errors=None):
