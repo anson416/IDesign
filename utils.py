@@ -499,9 +499,14 @@ def check_impossible_relationships(G, scene_graph):
                             conflicts.append(conflict_string)
     return conflicts
 
-def get_cluster_size(node, G, scene_graph): 
+def get_cluster_size(node, G, scene_graph):
     # Get the size of the cluster of objects
     node_obj = get_object_from_scene_graph(node, scene_graph)
+    # `build_graph` adds a node for every referenced object_id, even when that
+    # object is absent from scene_graph (a dangling reference the LLM left
+    # behind). Skip such nodes — they carry no size and would crash below.
+    if node_obj is None or node_obj.get("size_in_meters") is None:
+        return ({"left of": 0.0, "right of": 0.0, "behind": 0.0, "in front": 0.0}, set())
     try:
         node_obj_rot = get_rotation(node_obj, scene_graph)
     except:
@@ -510,7 +515,13 @@ def get_cluster_size(node, G, scene_graph):
     # Get the outgoing edges
     outgoing_e = list(G.out_edges(node, data=True))
     outgoing_nodes = [edge[1] for edge in outgoing_e]
-    # Get the topological order of the outgoing nodes
+    # Get the topological order of the outgoing nodes. The scene graph is
+    # LLM-generated, so a fresh mutual relationship can re-introduce a directed
+    # cycle that topological_sort cannot order. Break cycles first (same as
+    # get_conflicts / remove_unnecessary_edges) so we degrade gracefully
+    # instead of aborting the whole scene.
+    if not nx.is_directed_acyclic_graph(G):
+        _break_cycles(G)
     topological_order_reversed = list(reversed(list(nx.topological_sort(G))))
     topological_outgoing_nodes = [node for node in topological_order_reversed if node in outgoing_nodes]
     outgoing_e_sorted = sorted(outgoing_e, key=lambda x : topological_outgoing_nodes.index(x[1]))
@@ -526,6 +537,10 @@ def get_cluster_size(node, G, scene_graph):
                 continue
             
             edge_obj = get_object_from_scene_graph(edge[1], scene_graph)
+            # Skip dangling child references (object absent from scene_graph
+            # or missing its size) — same guard as for the node itself.
+            if edge_obj is None or edge_obj.get("size_in_meters") is None:
+                continue
             children_objs.add(edge[1])
             edge_obj_rot = get_rotation(edge_obj, scene_graph)
             rot_diff = abs(node_obj_rot - edge_obj_rot)
@@ -554,22 +569,35 @@ def get_cluster_size(node, G, scene_graph):
 
 def check_size_conflicts(G, scene_graph, user_input, room_priors, verbose=False):
     conflicts = []
+    # The scene graph is LLM-generated, so a mutual relationship can re-introduce
+    # a directed cycle here that topological_sort cannot order. Break cycles up
+    # front (same guard as get_conflicts / get_cluster_size) instead of aborting.
+    if not nx.is_directed_acyclic_graph(G):
+        _break_cycles(G)
     topological_order_reversed = list(reversed(list(nx.topological_sort(G))))
 
     if verbose:
         for node in topological_order_reversed:
             if node not in ROOM_LAYOUT_ELEMENTS:
                 clstr_size, children_objs = get_cluster_size(node, G, scene_graph)
-                
+
     # Find cluster size conflicts
     for node in topological_order_reversed:
         if node not in ROOM_LAYOUT_ELEMENTS:
             node_obj = get_object_from_scene_graph(node, scene_graph)
+            # build_graph adds a node for every referenced object_id, even when
+            # that object is absent from scene_graph (a dangling reference).
+            # Skip such nodes — they have no size to conflict-check.
+            if node_obj is None or node_obj.get("size_in_meters") is None:
+                continue
             node_obj_rot = get_rotation(node_obj, scene_graph)
             outgoing_e = list(G.out_edges(node, data=True))
             size_constraint = {"left of" : 0.0, "right of" : 0.0, "behind" : 0.0, "in front" : 0.0, "on" : [0.0, 0.0]}
             for edge in outgoing_e:
                 edge_obj = get_object_from_scene_graph(edge[1], scene_graph)
+                # Skip dangling child references — no size to accumulate.
+                if edge_obj is None or edge_obj.get("size_in_meters") is None:
+                    continue
                 edge_obj_rot = get_rotation(edge_obj, scene_graph)
                 rot_diff = abs(node_obj_rot - edge_obj_rot)
                 prep = edge[2]["weight"]["preposition"]
@@ -625,6 +653,10 @@ def check_size_conflicts(G, scene_graph, user_input, room_priors, verbose=False)
                 if edge[1] in outgoing_set:
                     continue
                 edge_obj = get_object_from_scene_graph(edge[1], scene_graph)
+                # Skip dangling references (object absent from scene_graph or
+                # missing its size) — nothing to constrain against.
+                if edge_obj is None or edge_obj.get("size_in_meters") is None:
+                    continue
                 if not edge_obj["is_on_the_floor"]:
                     continue
                 edge_obj_rot = get_rotation(edge_obj, scene_graph)
