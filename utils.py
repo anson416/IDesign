@@ -241,7 +241,13 @@ def find_room_layout_conflicts(G, scene_graph):
                         different_parent_room_layout = True if p not in parents_room_layout[0] else different_parent_room_layout
                     else:
                         different_parent_room_layout = True if p != parents_room_layout[0] else different_parent_room_layout
-            if len(parents_room_layout) > 0 and different_parent_room_layout:
+            if len(parents_room_layout) == 0:
+                # No parents survive (e.g. all relations were dropped during
+                # clean_and_extract_edges because the referenced object wasn't
+                # in the scene graph). Nothing to conflict-check; record an
+                # empty layout so descendants have something to compare against.
+                node_layout[node] = {}
+            elif different_parent_room_layout:
                 # This should be a spatial conflict, if the relationship isn't 'corner'
                 if not all([G[p][node]["weight"]["preposition"] == "in the corner" for p in parents]) and not any([p == "ceiling" for p in parents]):
                     conflict_string = f"The object {node} cannot have the parents {parents} at the same time! Eliminate one."
