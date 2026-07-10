@@ -1,3 +1,4 @@
+import ast
 import json
 import os
 import re
@@ -64,7 +65,24 @@ def _parse_agent_json(content, agent_name="agent"):
         m = re.search(r"\{.*\}", text, re.DOTALL)
         if m is not None:
             text = m.group(0)
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Some agents emit a Python dict literal (single-quoted keys/values,
+        # e.g. {'object_to_delete': 'potted_plant_3'}) instead of valid JSON.
+        # Fall back to a safe literal eval before giving up.
+        try:
+            value = ast.literal_eval(text)
+        except (ValueError, SyntaxError) as e:
+            raise ValueError(
+                f"{agent_name} returned content that is neither JSON nor a "
+                f"Python literal: {text!r}"
+            ) from e
+        if not isinstance(value, dict):
+            raise ValueError(
+                f"{agent_name} returned a literal that is not a dict: {value!r}"
+            )
+        return value
 
 
 class IDesign:
