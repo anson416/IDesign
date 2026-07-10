@@ -655,6 +655,15 @@ class IDesign:
         topological_order = [
             item for item in topological_order if item not in prior_ids
         ]
+        # get_depth() only records nodes reachable from a room-prior root; an
+        # object whose entire parent chain was dropped during graph cleaning
+        # (e.g. it only referenced a missing object like desk_1) has no depth.
+        # Such orphans can't be placed by the constraint solver and would raise
+        # KeyError when grouped by depth below. Drop them here — the FALLBACK_POS
+        # pass at the end of backtrack() still gives them a position.
+        topological_order = [
+            item for item in topological_order if item in depth_scene_graph
+        ]
         if verbose:
             print("Topological order: ", topological_order)
 
@@ -709,7 +718,7 @@ class IDesign:
                     error_flag = True
                     # Delete positions for objects at or beyond the current depth
                     for del_item in scene_graph_wo_layout:
-                        if depth_scene_graph[del_item["new_object_id"]] >= d:
+                        if depth_scene_graph.get(del_item["new_object_id"], -1) >= d:
                             if (
                                 "position" in del_item.keys()
                                 and not point_bbox[del_item["new_object_id"]]
