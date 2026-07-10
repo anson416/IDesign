@@ -1235,18 +1235,34 @@ def place_object(obj, scene_graph, room_dimensions, errors=None, verbose=False, 
         return errors
     
     counter = 0
-    # If the feasible region is degenerate (a point or a line: zero extent in
-    # any axis), random sampling can't explore it and the loop below would just
-    # re-draw the same coordinates. Cap the retries accordingly: a single point
-    # gets ONE attempt, a line/slab gets a handful. The previous code force-set
-    # `counter = 50` on a point bbox, which (with the `counter += 1` above)
-    # immediately tripped the `counter > 50` bail-out -- so the unique candidate
-    # was NEVER collision-tested and every point-bbox placement spuriously
-    # reported `no_positions_found`, stalling the outer backtrack loop. (See
-    # utils.py git history for the bug that surfaced for tightly-constrained
-    # child objects like a trash_can wedged between a wall and its parent.)
-    point_bbox_overlap = is_point_bbox(overlap)
-    max_attempts = 1 if point_bbox_overlap else 50
+    # Scale the retry budget to how much freedom the feasible region actually
+    # has. When the region is degenerate (one or more axes are clamped to a
+    # single value), random sampling can't escape whatever blocker occupies it:
+    # every draw lands in the same colliding spot. The previous logic only
+    # special-cased a *point* bbox (all three axes clamped -> 1 attempt); a
+    # *slab* or *line* (one free axis, two clamped -- e.g. a trash_can
+    # wedged between a wall and its parent: x and z fixed, only y free) still
+    # got the full 50 attempts, all of which collide. Combined with the parent
+    # re-rolling its own position (50x) and backtrack retrying (50x), that
+    # exploded into ~125k placement attempts for a single structurally-
+    # unplaceable child -- the observed "infinite loop". Count the free axes
+    # and cap attempts accordingly.
+    free_axes = sum(
+        not np.isclose(overlap[i], overlap[i + 1]) for i in (0, 2, 4)
+    )
+    if free_axes == 0:        # point bbox: a single candidate, test it once
+        max_attempts = 1
+    elif free_axes == 1:       # line/slab: little room to explore, probe a few
+        max_attempts = 10
+    else:                      # 2D/3D region: full budget
+        max_attempts = 50
+    # When a child placement keeps failing, re-rolling the parent rarely helps
+    # (the child's region moves with the parent but the blocking object still
+    # covers it). Cap consecutive child failures so a structurally-unplaceable
+    # child bails the parent quickly and reaches FALLBACK_POS, instead of
+    # burning 50 parent x (child attempts) per backtrack iteration.
+    _MAX_CHILD_FAILURES = 5
+    child_failures = 0
     while True:
         counter += 1
         if counter > max_attempts:
@@ -1308,6 +1324,22 @@ def place_object(obj, scene_graph, room_dimensions, errors=None, verbose=False, 
             for child in children:
                 if "position" in child.keys():
                     del child["position"]
+            # If the child keeps failing across different parent positions, the
+            # parent-child configuration is structurally unplaceable -- re-rolling
+            # the parent won't help. Bail out so the object reaches FALLBACK_POS
+            # instead of looping 50x per backtrack iteration.
+            child_failures += 1
+            if child_failures >= _MAX_CHILD_FAILURES:
+                if verbose:
+                    print(
+                        f"Child placement failed {child_failures}x for "
+                        f"{obj['new_object_id']}; bailing to FALLBACK"
+                    )
+                del obj["position"]
+                if not errors:
+                    key = ("no_positions_found", obj["new_object_id"])
+                    errors[key] = 1 + errors.get(key, 0)
+                return errors
             continue
         if verbose:
             print("Object placed: ", obj["new_object_id"])
