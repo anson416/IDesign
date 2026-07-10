@@ -1081,7 +1081,14 @@ def get_possible_positions(object_id, scene_graph, room_dimensions):
         is_on_floor = obj["is_on_the_floor"]
         obj_A = obj
         key = "layout_element_id" if "layout_element_id" in constraint.keys() else "object_id"
-        obj_B = [element for element in scene_graph if element.get("new_object_id") == constraint[key]][0]
+        # The constraint may reference an object/layout element that isn't in
+        # the scene graph (a dangling reference left by the LLM/corrector, or a
+        # target dropped during pruning). Skip it rather than crashing — the
+        # object can still be placed via its other constraints, or by FALLBACK_POS.
+        obj_B_list = [element for element in scene_graph if element.get("new_object_id") == constraint[key]]
+        if not obj_B_list:
+            continue
+        obj_B = obj_B_list[0]
         if "position" in obj_B.keys():
             possible_positions.append(func_map[prep](obj_A, obj_B, adjacency, is_on_floor, room_dimensions))
 
