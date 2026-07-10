@@ -252,7 +252,28 @@ class IDesign:
             object_deletion_agent,
         ) = get_corrector_agents(self._llm_config)
 
+        # Hard cap on correction iterations: the LLM corrector can oscillate
+        # (e.g. "left of" -> "behind" -> "left of" ...) or pick relationships
+        # that trade one conflict for another, so `conflicts` may never empty
+        # and the bare `while len(conflicts) > 0` loops forever. Mirrors the
+        # _MAX_BACKTRACK_ITERS guard in backtrack(); on overflow we keep the
+        # partial scene (downstream backtrack + FALLBACK_POS still place the
+        # unresolved object). The oscillation guard below fails fast: the scene
+        # graph has a finite set of placements, so any infinite loop must
+        # revisit a state, and re-applying an already-tried placement for the
+        # same object means we are cycling.
+        _MAX_CORRECTOR_ITERS = 50
+        _correction_iters = 0
+        _seen_signatures = set()
         while len(conflicts) > 0:
+            _correction_iters += 1
+            if _correction_iters > _MAX_CORRECTOR_ITERS:
+                print(
+                    f"CORRECTOR_CAP: hit {_MAX_CORRECTOR_ITERS} correction "
+                    f"iterations with {len(conflicts)} conflict(s) remaining; "
+                    "saving partial placement"
+                )
+                break
             spatial_corrector_agent.reset(), json_schema_debugger.reset()
             groupchat = LayoutCorrectorGroupChat(
                 agents=[
@@ -282,6 +303,21 @@ class IDesign:
                 correction_json["corrected_object"]["new_object_id"],
                 scene_graph,
             )
+            _signature = (
+                correction_json["corrected_object"]["new_object_id"],
+                json.dumps(
+                    correction_json["corrected_object"]["placement"],
+                    sort_keys=True,
+                ),
+            )
+            if _signature in _seen_signatures:
+                print(
+                    f"CORRECTOR_OSCILLATION: {correction_json['corrected_object']['new_object_id']} "
+                    "re-applied a placement already tried; breaking to avoid an "
+                    "infinite correction loop (partial placement kept)."
+                )
+                break
+            _seen_signatures.add(_signature)
             corr_obj["is_on_the_floor"] = correction_json["corrected_object"][
                 "is_on_the_floor"
             ]
