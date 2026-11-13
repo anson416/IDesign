@@ -392,6 +392,14 @@ class IDesign:
                     correction["content"], "Object_deletion_agent"
                 )
                 object_to_delete = correction_json["object_to_delete"]
+                if object_to_delete not in G:
+                    # The deletion agent referenced an object that is not in
+                    # the tracked graph; treat the deletion as a no-op.
+                    print(
+                        f"Deletion target {object_to_delete} not in digraph; "
+                        "skipping deletion"
+                    )
+                    continue
                 descendants = nx.descendants(G, object_to_delete)
                 objs_to_delete = descendants.union({object_to_delete})
                 print("Objs to Delete: ", objs_to_delete)
