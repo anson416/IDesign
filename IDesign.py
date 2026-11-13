@@ -183,17 +183,24 @@ class IDesign:
                 if attempt == _MAX_ATTEMPTS:
                     raise
                 continue
-            break
 
-        blocks_designer, blocks_architect = (
-            extract_list_from_json(designer_response),
-            extract_list_from_json(architect_response),
-        )
-        if len(blocks_designer) != len(blocks_architect):
-            print("Lengths: ", len(blocks_designer), len(blocks_architect))
-            raise ValueError(
-                "The number of blocks from the designer and architect should be the same! Please generate again."
+            blocks_designer, blocks_architect = (
+                extract_list_from_json(designer_response),
+                extract_list_from_json(architect_response),
             )
+            if len(blocks_designer) != len(blocks_architect):
+                print(
+                    f"create_initial_design: attempt {attempt}/{_MAX_ATTEMPTS} "
+                    f"block-count mismatch: {len(blocks_designer)} vs "
+                    f"{len(blocks_architect)}; regenerating"
+                )
+                if attempt == _MAX_ATTEMPTS:
+                    raise ValueError(
+                        "The number of blocks from the designer and architect "
+                        "should be the same! Please generate again."
+                    )
+                continue
+            break
 
         json_data = None
 
