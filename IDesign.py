@@ -189,17 +189,24 @@ class IDesign:
                 extract_list_from_json(architect_response),
             )
             if len(blocks_designer) != len(blocks_architect):
-                print(
-                    f"create_initial_design: attempt {attempt}/{_MAX_ATTEMPTS} "
-                    f"block-count mismatch: {len(blocks_designer)} vs "
-                    f"{len(blocks_architect)}; regenerating"
-                )
-                if attempt == _MAX_ATTEMPTS:
-                    raise ValueError(
-                        "The number of blocks from the designer and architect "
-                        "should be the same! Please generate again."
+                if attempt < _MAX_ATTEMPTS:
+                    print(
+                        f"create_initial_design: attempt {attempt}/{_MAX_ATTEMPTS} "
+                        f"block-count mismatch: {len(blocks_designer)} vs "
+                        f"{len(blocks_architect)}; regenerating"
                     )
-                continue
+                    continue
+                # Deterministic mismatch: the architect is the placement
+                # authority, so keep its placed objects and drop the
+                # designer's unplaced surplus suggestions.
+                n = min(len(blocks_designer), len(blocks_architect))
+                print(
+                    f"create_initial_design: reconciling persistent mismatch "
+                    f"{len(blocks_designer)} vs {len(blocks_architect)} -> {n} "
+                    f"placed blocks"
+                )
+                blocks_designer = blocks_designer[:n]
+                blocks_architect = blocks_architect[:n]
             break
 
         json_data = None
