@@ -1269,7 +1269,7 @@ def place_object(obj, scene_graph, room_dimensions, errors=None, verbose=False, 
             if verbose:
                 print("No positions found for object: ", obj["new_object_id"])
                 print(overlap)
-            del obj["position"]
+            obj.pop("position", None)
             # If there wasn't any errors, it means that the object was colliding with other objects
             if not errors:
                 key = ("no_positions_found", obj["new_object_id"])
