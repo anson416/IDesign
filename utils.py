@@ -1335,7 +1335,7 @@ def place_object(obj, scene_graph, room_dimensions, errors=None, verbose=False, 
                         f"Child placement failed {child_failures}x for "
                         f"{obj['new_object_id']}; bailing to FALLBACK"
                     )
-                del obj["position"]
+                obj.pop("position", None)
                 if not errors:
                     key = ("no_positions_found", obj["new_object_id"])
                     errors[key] = 1 + errors.get(key, 0)
